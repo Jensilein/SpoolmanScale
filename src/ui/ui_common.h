@@ -2,6 +2,7 @@
 
 #include <lvgl.h>
 
+#include "services/spool_color.h"
 #include "services/text_util.h"
 
 void addBackButton(lv_obj_t *parent, lv_event_cb_t cb);
@@ -16,7 +17,7 @@ lv_obj_t* buildOverlayScreen();
 
 // Frees a screen object that is about to be replaced and clears the pointer.
 // Call at the top of every build*Screen() function: without it the previous
-// object is orphaned in the LVGL pool (LV_MEM_SIZE) and never reclaimed.
+// object is orphaned in LVGL's memory and never reclaimed.
 // Uses lv_obj_del_async(), so the object is destroyed at the end of the
 // current lv_timer_handler() pass. That keeps it safe even when called from
 // an event callback belonging to the screen itself.
@@ -24,11 +25,12 @@ lv_obj_t* buildOverlayScreen();
 // own stay correct.
 void releaseScreen(lv_obj_t **scr);
 
-// One snapshot of the LVGL pool, tagged so a log can be read back per list.
-// LV_MEM_SIZE is a static pool in internal SRAM and PSRAM does not feed it, so
-// the numbers that matter are the ones taken before the rows exist.
+// One snapshot of LVGL's memory (hardware/lvgl_mem.h), tagged so a log can be
+// read back per list. free= is what is left of the internal budget, the
+// figure a list runs into, so the numbers that matter are the ones taken
+// before the rows exist.
 //
-// What an exhausted pool does was long noted here as while(1) from
+// What an exhausted pool did was long noted here as while(1) from
 // LV_USE_ASSERT_MALLOC - a freeze, no reboot. That is wrong for the case that
 // matters: lv_obj_class_create_obj() (lv_obj_class.c:47) returns NULL without
 // asserting anything, and lv_obj_create() / lv_label_create() hand that
@@ -43,9 +45,12 @@ void releaseScreen(lv_obj_t **scr);
 // Silent unless sd_verbose is on, so it costs nothing in normal operation.
 void logLvMem(const char* tag, int rows);
 
-// Whether the pool can still take one more list row. Asked before a row is
+// Whether internal RAM can still take one more list row. Asked before a row is
 // built rather than after each object in it: a row is five objects, and
-// running out between the second and the third is the crash above.
+// running out between the second and the third was the crash above. Since
+// LVGL can fall back to PSRAM that crash is gone, but a list still stops
+// here: rows in PSRAM scroll with a stutter, so a list is no longer than the
+// old pool allowed.
 //
 // The reserve scales with the pointer width, so the same number covers the
 // device and the 64 bit host the simulator runs on, where every object is
@@ -56,12 +61,34 @@ bool lvPoolHasRoomForRow();
 // Neutral grey for a colour swatch with no usable colour behind it.
 #define SWATCH_FALLBACK_COLOR 0x333333
 
-// Parse "#RRGGBB" or "RRGGBB" into a swatch colour, falling back to
-// SWATCH_FALLBACK_COLOR when the string is absent, too short or malformed.
-// Both Spoolman and FilaMan hand out empty and truncated colour fields, and the
-// call sites used to run sscanf without checking its result, which left r/g/b
-// uninitialised and gave the swatch a random colour off the stack.
-lv_color_t swatchColorFromHex(const char* hex);
+// What a clear filament is drawn in when nothing names a tint for it: the
+// glass white the filament databases use for "clear".
+#define SWATCH_GLASS_COLOR    0xDCE6F0
+
+// A filament that lets light through is drawn as a vertical fade, from its
+// hue at the top into the screen ground at the bottom. It reads as glass, the
+// hue stays recognisable at the top, and it cannot be mistaken for an opaque
+// spool of a darker colour, which a plain half-transparent fill was. These
+// say how much of the hue is left at the bottom, out of 255: a translucent
+// filament keeps some, a clear one almost none.
+#define SWATCH_FADE_TRANSLUCENT 110
+#define SWATCH_FADE_CLEAR        40
+
+// Paints a filament colour onto a swatch: flat when opaque, the fade above
+// when it lets light through, SWATCH_FALLBACK_COLOR when nothing is known.
+// Touches the background only, so a border the caller chose - the AMS tile's
+// accent for the active bay - stays. Safe on an object that showed another
+// spool before: a fade left over from it is removed.
+void swatchPaint(lv_obj_t* obj, const SpoolColor& c);
+
+// The same from a server's colour field, "#RRGGBB" or "RRGGBBAA". Both
+// Spoolman and FilaMan hand out empty and truncated colour fields, which
+// paint as SWATCH_FALLBACK_COLOR rather than as a random colour off the stack.
+void swatchPaintHex(lv_obj_t* obj, const char* hex);
+
+// The colour in the middle of a painted swatch as 0xRRGGBB, for choosing the
+// colour of text drawn across it.
+uint32_t swatchCenterRgb(const SpoolColor& c);
 
 // utf8Cut(), isHexColorWord() and colorNameClean() moved to
 // services/text_util.h, which the AMS parsers can reach too. Included

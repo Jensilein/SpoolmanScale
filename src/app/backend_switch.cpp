@@ -9,6 +9,7 @@
 #include "services/ams_presence.h"
 #include "services/backend_api.h"
 #include "services/bambuddy_device.h"
+#include "services/dried_batch.h"
 #include "services/filaman_api.h"
 
 #include "app/app_state.h"
@@ -18,22 +19,35 @@
 #include "services/ams_pick.h"
 #include "services/location_state.h"
 #include "services/remote_link.h"
+#include "services/spool_cache.h"
 #include "services/tag_field.h"
 #include "services/user_options.h"
 #include "ui/header_status.h"
 #include "ui/tag_display.h"
 #include "web/web_server.h"
 
+static volatile uint32_t s_generation = 0;
+
+uint32_t backendGeneration() { return s_generation; }
+
 void backendApplyHost(const char *host) {
+  s_generation++;
+  // A drying batch still running would carry on against the new address.
+  driedBatchCancel();
   backendSetHost(host);
   filamanForgetLocations();
   backendInvalidateExtraFieldCache();
   amsPresenceForget();
+  spoolCacheForget("host changed");
   sm_reachable = false;          // unknown until the new address answers
 }
 
 void backendApplyMode(BackendMode mode) {
   if (mode == backendMode()) return;
+  s_generation++;
+  // Before the mode changes under it: the rest of a drying batch would
+  // otherwise be written through the other backend.
+  driedBatchCancel();
 
   const char *from = backendName();
 
@@ -73,6 +87,12 @@ void backendApplyMode(BackendMode mode) {
   // The extra field probe is keyed by base URL and invalidates itself, but the
   // text field list is not - it would still name the fields of the old server.
   backendInvalidateExtraFieldCache();
+
+  // Keyed by address and backend as well, so it would notice on its own. Said
+  // anyway: a spool id resolved against the wrong server is the most expensive
+  // mistake there is here, and this gives the PSRAM back a loop pass later
+  // instead of at the next link.
+  spoolCacheForget("backend changed");
 
   // Resets the BamBuddy registration and asks the new server whether it keeps
   // its own database or proxies to Spoolman. That answer decides where every

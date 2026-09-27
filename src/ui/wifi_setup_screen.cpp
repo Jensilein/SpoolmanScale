@@ -7,7 +7,6 @@
 #include <lvgl.h>
 #include <cstring>
 
-#include "connection_screen.h"
 #include "header_status.h"
 #include "hardware/sd_logger.h"
 #include "lang.h"
@@ -19,6 +18,7 @@
 #include "setup_welcome_screen.h"
 #include "wifi_portal_screen.h"
 #include "ui_common.h"
+#include "ui/theme.h"
 #include "services/backend.h"
 
 
@@ -123,6 +123,13 @@ static char  wifi_setup_ssid[33]  = "";
 // The password is copied out of the textarea here, because that textarea is
 // gone by the time the connect runs.
 static bool  wifi_scan_pending    = false;
+// A scan runs in the background while the list shows a spinner; the loop
+// polls it. The time bounds a scan that never reports back.
+static bool  wifi_scan_running    = false;
+static unsigned long wifi_scan_started_ms = 0;
+#define WIFI_SCAN_TIMEOUT_MS 15000
+#define WIFI_SCAN_SPINNER    48
+static void finishWifiScan(int n);
 static bool  wifi_connect_pending = false;
 static bool  wifi_reconnect_pending = false;
 static char  wifi_setup_pass[WIFI_PASS_MAX_LEN + 1] = "";
@@ -176,9 +183,9 @@ void buildWifiSetupScreen() {
       // settings menu in the middle of the setup.
       wifi_reconnect_pending = true;
     } else {
-      hideAllOverlays();
-      buildConnectionScreen();
-      lv_obj_clear_flag(scr_connection, LV_OBJ_FLAG_HIDDEN);
+      // Into the WiFi menu the setup is reached from. Deferred: the menu is
+      // built on the loop, not inside this callback.
+      show_wifi_menu_pending = true;
     }
   });
 
@@ -247,6 +254,7 @@ void buildWifiSetupScreen() {
 
   // Scan button callback (after building list)
   lv_obj_add_event_cb(btn_scan, [](lv_event_t *e) {
+    if (wifi_scan_running) return;   // the spinner already says it is on it
     lv_label_set_text(lbl_wifi_setup_status, T(STR_WIFI_SCAN));
     wifi_scan_pending = true;
   }, LV_EVENT_CLICKED, NULL);
@@ -300,6 +308,15 @@ void handleWifiSetupDeferredActions() {
       doWifiScan();
     }
   }
+  if (wifi_scan_running) {
+    const int n = wifiManagerScanPoll();
+    const bool timed_out = millis() - wifi_scan_started_ms > WIFI_SCAN_TIMEOUT_MS;
+    if (n >= 0 || n == -2 || timed_out) {
+      wifi_scan_running = false;
+      if (timed_out && n < 0) logSD("WiFi scan: no answer, given up");
+      finishWifiScan(n);
+    }
+  }
   if (wifi_connect_pending) {
     wifi_connect_pending = false;
     saveWifiCredentials(wifi_setup_ssid, wifi_setup_pass);
@@ -317,15 +334,44 @@ void handleWifiSetupDeferredActions() {
 }
 
 // Perform scan and populate list
+// The scan used to hold the loop for its 2 to 4 seconds, with nothing on the
+// screen moving. It runs in the background now, with a spinner where the list
+// will be, and finishWifiScan() fills the list once the loop sees it done.
 void doWifiScan() {
-  // Liste leeren
+  if (wifi_scan_running) return;
   lv_obj_clean(lbl_wifi_scan_list);
-  lv_timer_handler();
+  lv_obj_t *spin = lv_spinner_create(lbl_wifi_scan_list, 1000, 70);
+  lv_obj_add_flag(spin, LV_OBJ_FLAG_FLOATING);
+  lv_obj_set_size(spin, WIFI_SCAN_SPINNER, WIFI_SCAN_SPINNER);
+  lv_obj_center(spin);
+  lv_obj_set_style_arc_width(spin, 6, LV_PART_MAIN);
+  lv_obj_set_style_arc_width(spin, 6, LV_PART_INDICATOR);
+  lv_obj_set_style_arc_color(spin, lv_color_hex(UI_COL_LINE), LV_PART_MAIN);
+  lv_obj_set_style_arc_color(spin, lv_color_hex(UI_COL_ACCENT), LV_PART_INDICATOR);
+  lv_obj_clear_flag(spin, LV_OBJ_FLAG_CLICKABLE);
 
-  // Disconnect required after failed WiFi.begin() - 
-  // otherwise scanNetworks() returns 0
-  wifiManagerPrepareScan();
-  int n = wifiManagerScanNetworks();
+  // Disconnect required after failed WiFi.begin() -
+  // otherwise scanNetworks() returns 0. Only then: a connected station scans
+  // beside its link. Taking the link down first turned the driver off while
+  // the loop kept serving, and the web server freed a waiting connection's
+  // buffers through the driver that was gone - PANIC in esp_pbuf_free under
+  // lwip_accept on 26.09.2026. The blocking scan never served meanwhile.
+  if (!wifiManagerIsConnected()) wifiManagerPrepareScan();
+  if (!wifiManagerStartScanAsync()) {
+    finishWifiScan(-2);
+    return;
+  }
+  wifi_scan_running = true;
+  wifi_scan_started_ms = millis();
+}
+
+static void finishWifiScan(int n) {
+  // The screen may have gone while the scan ran: then only the results go.
+  if (!scr_wifi_setup || !lbl_wifi_scan_list || !lbl_wifi_setup_status) {
+    wifiManagerClearScan();
+    return;
+  }
+  lv_obj_clean(lbl_wifi_scan_list);   // the spinner
 
   // Negative means WIFI_SCAN_FAILED (-2) or WIFI_SCAN_RUNNING (-1). Checking
   // only for 0 let those fall through into "-2 networks found" above an empty
@@ -676,7 +722,7 @@ void buildWifiConnectingScreen() {
   // bottom edge), so the block stops just clear of them.
   conn_val_ssid = addInfoRow(scr_wifi_connecting, 134, "SSID",    &conn_lbl_ssid);
   conn_val_ip   = addInfoRow(scr_wifi_connecting, 164, "IP",      &conn_lbl_ip);
-  conn_val_gw   = addInfoRow(scr_wifi_connecting, 194, "Gateway", &conn_lbl_gw);
+  conn_val_gw   = addInfoRow(scr_wifi_connecting, 194, T(STR_WIFI_ROW_GATEWAY), &conn_lbl_gw);
   conn_val_rssi = addInfoRow(scr_wifi_connecting, 224, "Signal",  &conn_lbl_rssi);
   setConnSummaryHidden(true);
 

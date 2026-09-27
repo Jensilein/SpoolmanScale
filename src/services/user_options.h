@@ -70,6 +70,13 @@ extern bool g_flm_tagless;
 // scale that shares a bench with something that knocks it.
 extern bool g_wake_on_load;
 
+// Try Snapmaker's keys on a 4 byte tag that refused the Bambu ones. Off by
+// default, and off means not one extra byte goes to the reader: nobody here
+// owns a Snapmaker spool, so the decoding is proven on a contributor's tag
+// only, and the attempt costs every other 4 byte tag about half a second.
+// Only in the web interface, the device has no screen to spare for it.
+extern bool g_snapmaker_tags;
+
 // Where the drying date goes in BamBuddy mode. BamBuddy has no field for it
 // at all - upstream issues #2863 and #1754 are open and waiting for votes -
 // so the scale needs somewhere to put it, and none of the choices is obvious
@@ -200,6 +207,15 @@ extern bool g_card_uids_write;
 // relinked spool by spool to get anything out of it.
 extern bool g_hw_uid_write;
 
+// Whether a Bambu spool's tray uuid also goes into extra.tag while Spoolman's
+// native tags are the tag source. OpenSpoolman reads that field and knows
+// nothing of the relation yet, and has had no update in a long time. On, the
+// field is created when missing; off, extra.tag is left alone entirely.
+// Decided once by tagFieldAutoSelect() when it is not in NVS: on when the
+// server already has extra.tag, i.e. some tool already uses it.
+#define OSM_TAG_KEY "osm_tag"
+extern bool g_osm_tag;
+
 // Whether the scale asks for a second tag right after a link succeeded.
 // Off by default.
 //
@@ -229,3 +245,10 @@ extern bool g_tag2_ask;
 // and every weighing opens a window; here there is no window and no implicit
 // bay, so an "always" would have nothing to do.
 extern bool g_ams_pick_ask;
+
+// Whether the device may use Bluetooth Low Energy at all. Off by default, and
+// off means the BLE stack is never started: no radio time shared with WiFi,
+// no internal RAM taken. On means the features that need it (a device scan,
+// the label printer) start the stack when they run and release it right
+// after; nothing stays up between uses. Settings > Connection > Bluetooth.
+extern bool g_ble_enabled;

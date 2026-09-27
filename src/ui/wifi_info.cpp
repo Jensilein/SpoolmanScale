@@ -5,7 +5,7 @@
 #include <Arduino.h>
 #include <lvgl.h>
 
-#include "connection_screen.h"
+#include "app/deferred_actions.h"
 #include "hardware/sd_logger.h"
 #include "header_status.h"
 #include "lang.h"
@@ -22,9 +22,10 @@
 // gone: the Connection screen has a dedicated filament-manager tile sitting
 // directly beside the one that opens this screen, so repeating the backend
 // address here was duplication.
-// Row labels stay as plain literals: SSID, Status, IP, Gateway, DNS, MAC and
-// Signal read identically in German and English, so putting them through the
-// string table would add fourteen entries without translating anything.
+// Row labels SSID, IP, DNS, MAC and Signal stay plain literals: they read the
+// same in German, English and French, so the string table would add entries
+// without translating anything. Status and Gateway do not in French, so those
+// two come from the table.
 static const int ROW_Y0   = 58;   // sub-header back button ends at ~46
 static const int ROW_STEP = 30;
 static const int ROW_COUNT = 7;
@@ -58,11 +59,9 @@ static lv_obj_t* addRow(int index, const char *label) {
 static void ipBarModeText(char *buf, size_t len) {
   if (g_ip_bar_mode == IP_BAR_DEVICE)       copyT(buf, len, STR_IP_BAR_DEVICE);
   else if (g_ip_bar_mode == IP_BAR_BACKEND) snprintf(buf, len, "%s", backendName());
-  // Reads the same in German and English, so it stays a literal - the same
-  // reasoning the row labels at the top of this file are kept literal for.
   // No longer ".local": the bar shows the device label, and the suffix it
   // carries is now the network's business rather than always mDNS.
-  else if (g_ip_bar_mode == IP_BAR_MDNS)    strncpy(buf, "Name", len - 1);
+  else if (g_ip_bar_mode == IP_BAR_MDNS)    copyT(buf, len, STR_IP_BAR_NAME);
   // The backend's name with the port marker after it, so the two backend modes
   // are told apart by what they add rather than by their position in the ring.
   else if (g_ip_bar_mode == IP_BAR_BACKEND_PORT)
@@ -145,15 +144,15 @@ void buildWifiScreen() {
   releaseScreen(&scr_wifi);
   scr_wifi = buildOverlayScreen();
   buildSubHeader(scr_wifi, T(STR_BTN_WIFI_STATUS), [](lv_event_t *e) {
-    if (!scr_connection) buildConnectionScreen();
-    hideAllOverlays();
-    lv_obj_clear_flag(scr_connection, LV_OBJ_FLAG_HIDDEN);
+    logSD("BTN: Back -> WiFi menu");
+    // Deferred: the menu is built on the loop, not inside this callback.
+    show_wifi_menu_pending = true;
   });
 
   val_ssid  = addRow(0, "SSID");
-  val_state = addRow(1, "Status");
+  val_state = addRow(1, T(STR_WIFI_ROW_STATUS));
   val_ip    = addRow(2, "IP");
-  val_gw    = addRow(3, "Gateway");
+  val_gw    = addRow(3, T(STR_WIFI_ROW_GATEWAY));
   val_dns   = addRow(4, "DNS");
   // The one field a router needs to hand out a fixed address, which is the
   // usual answer to "the scale's IP keeps moving".
@@ -166,7 +165,7 @@ void buildWifiScreen() {
 }
 
 // The screen and its updater existed but nothing ever called them, so the
-// device had no way to show its own IP. Entry point for the Connection screen.
+// device had no way to show its own IP. Entry point for the WiFi menu.
 void showWifiStatusScreen() {
   if (!scr_wifi) buildWifiScreen();
   hideAllOverlays();

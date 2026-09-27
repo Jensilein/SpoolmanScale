@@ -2,6 +2,7 @@
 #include "navigation.h"
 #include "app/app_state.h"
 #include "services/backend.h"
+#include "services/ble_service.h"
 
 #include <Arduino.h>
 #include <lvgl.h>
@@ -10,6 +11,7 @@
 
 #include "app_config.h"
 #include "app/deferred_actions.h"
+#include "bambu/bambu_scan.h"
 #include "bambu/bambu_tag.h"
 #include "hardware/scale.h"
 #include "hardware/scale_state.h"
@@ -28,6 +30,7 @@
 #include "ui/more_info_screen.h"
 #include "ui/settings_screen.h"
 #include "ui/spool_flow.h"
+#include "ui/theme.h"
 #include "ui_common.h"
 
 // ============================================================
@@ -54,12 +57,12 @@ void updateDisplay() {
   // Filament name: cleared until Spoolman responds
   lv_label_set_text(lbl_filament_name, "");
 
-  // Color swatch + hex text
-  lv_label_set_text(lbl_color,
-    strlen(g_tag.color_hex) > 1 ? g_tag.color_hex : "-");
-  if (strlen(g_tag.color_hex) == 7) {
-    lv_obj_set_style_bg_color(lbl_color_swatch, swatchColorFromHex(g_tag.color_hex), 0);
-  }
+  // Colour swatch + hex text, alpha included: the tag's own colour until the
+  // backend answers, which may still tint a clear spool.
+  char tag_hex[SPOOL_COLOR_HEX_MAX];
+  spoolColorFormat(g_tag.color, tag_hex, sizeof(tag_hex));
+  lv_label_set_text(lbl_color, tag_hex[0] ? tag_hex : "-");
+  if (g_tag.color.valid) swatchPaint(lbl_color_swatch, g_tag.color);
 
   // Temp (Zone 3 Row B)
   char temp_str[24];
@@ -70,14 +73,16 @@ void updateDisplay() {
   }
   lv_label_set_text(lbl_temp, temp_str);
 
+  bool is_bambu = (strlen(g_tag.tray_uuid) == 32) || (countBambuDataBlocksRead(g_tag) > 0);
+
   // Vendor (Zone 3 Row B)
   lv_label_set_text(lbl_vendor,
-    strlen(g_tag.vendor) > 0 ? g_tag.vendor : BAMBU_VENDOR_NAME);
+    strlen(g_tag.vendor) > 0 ? g_tag.vendor : (is_bambu ? BAMBU_VENDOR_NAME : "-"));
 
   // Hidden labels still written for More Info screen compatibility
   lv_label_set_text(lbl_uid, g_tag.uid_str);
   lv_label_set_text(lbl_tray_uuid,
-    strlen(g_tag.tray_uuid) == 32 ? g_tag.tray_uuid : T(STR_NOT_READABLE));
+    strlen(g_tag.tray_uuid) == 32 ? g_tag.tray_uuid : (is_bambu ? T(STR_NOT_READABLE) : "-"));
   lv_label_set_text(lbl_date,
     strlen(g_tag.production_date) > 4 ? g_tag.production_date : T(STR_UNKNOWN));
   lv_label_set_text(lbl_detail, sm_article_nr[0] ? sm_article_nr : "-");
@@ -95,10 +100,11 @@ void showTagInfoOnDisplay(const TagInfo *ti) {
   if (ti->brand[0])    lv_label_set_text(lbl_vendor, ti->brand);
 
   if (ti->has_color) {
-    char hex[8];
-    snprintf(hex, sizeof(hex), "#%02X%02X%02X", ti->r, ti->g, ti->b);
+    const SpoolColor c = spoolColorFromRgba(ti->r, ti->g, ti->b, SPOOL_ALPHA_OPAQUE);
+    char hex[SPOOL_COLOR_HEX_MAX];
+    spoolColorFormat(c, hex, sizeof(hex));
     lv_label_set_text(lbl_color, hex);
-    lv_obj_set_style_bg_color(lbl_color_swatch, swatchColorFromHex(hex), 0);
+    swatchPaint(lbl_color_swatch, c);
   }
 
   // Both ends or neither: a range printed from a single value would read as a
@@ -153,7 +159,7 @@ void buildUI() {
   lv_obj_align(hdr_lbl, LV_ALIGN_LEFT_MID, 8, 0);
 
   // SD card indicator in header - only visible when sd_available.
-  // Positions of this and the four chips right of it come from
+  // Positions of this and the five chips right of it come from
   // layoutHeaderChips() at the end of this function, not from fixed offsets.
   lbl_hdr_sd = lv_label_create(hdr);
   lv_label_set_text(lbl_hdr_sd, LV_SYMBOL_SD_CARD);
@@ -166,10 +172,41 @@ void buildUI() {
   lv_obj_set_style_text_color(lbl_hdr_wifi, lv_color_hex(0x606060), 0);
   lv_obj_set_style_text_font(lbl_hdr_wifi, &lv_font_montserrat_ext_12, 0);
 
-  lbl_hdr_nfc = lv_label_create(hdr);
+  // Bluetooth, left of WiFi. Hidden while the master switch is off, so a
+  // device that never uses BLE never shows it; updateHeaderStatus() follows
+  // the switch. Quiet by design: on means allowed, not connected.
+  lbl_hdr_bt = lv_label_create(hdr);
+  lv_label_set_text(lbl_hdr_bt, LV_SYMBOL_BLUETOOTH);
+  lv_obj_set_style_text_color(lbl_hdr_bt, lv_color_hex(UI_COL_CAPTION), 0);
+  lv_obj_set_style_text_font(lbl_hdr_bt, UI_FONT_CAPTION, 0);
+  if (!bleEnabled()) lv_obj_add_flag(lbl_hdr_bt, LV_OBJ_FLAG_HIDDEN);
+
+  // A button like the AMS chip, and built the same way: it opens the tag
+  // view. The label inside is still the reader's state - green "NFC", red
+  // "NFC!" - and updateHeaderStatus() colours the border to match, so the
+  // chip says the same thing it always said and can now also be pressed.
+  btn_hdr_nfc = lv_btn_create(hdr);
+  lv_obj_set_width(btn_hdr_nfc, LV_SIZE_CONTENT);
+  lv_obj_set_height(btn_hdr_nfc, HDR_AMS_H);
+  lv_obj_set_style_pad_hor(btn_hdr_nfc, HDR_AMS_PAD_X, 0);
+  lv_obj_set_style_pad_ver(btn_hdr_nfc, 0, 0);
+  lv_obj_set_style_bg_color(btn_hdr_nfc, lv_color_hex(UI_COL_CHIP), 0);
+  lv_obj_set_style_bg_color(btn_hdr_nfc, lv_color_hex(UI_COL_LINE), LV_STATE_PRESSED);
+  lv_obj_set_style_border_width(btn_hdr_nfc, 1, 0);
+  lv_obj_set_style_border_color(btn_hdr_nfc, lv_color_hex(UI_COL_RULE), 0);
+  lv_obj_set_style_radius(btn_hdr_nfc, 4, 0);
+  lv_obj_set_style_shadow_width(btn_hdr_nfc, 0, 0);
+  // The AMS chip's touch pad, for the same reason and with the same ceiling.
+  lv_obj_set_ext_click_area(btn_hdr_nfc, HDR_AMS_TOUCH_PAD);
+  lv_obj_add_event_cb(btn_hdr_nfc, [](lv_event_t *e) {
+    logSD("UI: Header chip -> tag view");
+    show_tag_view_pending = true;
+  }, LV_EVENT_CLICKED, NULL);
+  lbl_hdr_nfc = lv_label_create(btn_hdr_nfc);
   lv_label_set_text(lbl_hdr_nfc, "NFC");
   lv_obj_set_style_text_color(lbl_hdr_nfc, lv_color_hex(0x606060), 0);
   lv_obj_set_style_text_font(lbl_hdr_nfc, &lv_font_montserrat_ext_12, 0);
+  lv_obj_center(lbl_hdr_nfc);
 
   // Not built at all without a load cell, rather than built and hidden. The
   // packing does skip hidden objects now, so this is no longer load bearing -
@@ -181,9 +218,9 @@ void buildUI() {
     lv_obj_set_style_text_font(lbl_hdr_scl, &lv_font_montserrat_ext_12, 0);
   }
 
-  // The one chip that is a button. Bordered and filled where its neighbours
-  // are bare text, because it does something when pressed and they do not -
-  // among five status labels that difference has to be visible.
+  // One of the two chips that are buttons. Bordered and filled where its
+  // neighbours are bare text, because it does something when pressed and they
+  // do not - among five status labels that difference has to be visible.
   //
   // Sized to its content so the packing can measure it, 18 px tall so it sits
   // inside the 26 px header with room above and below. Built in both modes and
@@ -193,10 +230,10 @@ void buildUI() {
   lv_obj_set_height(btn_hdr_ams, HDR_AMS_H);
   lv_obj_set_style_pad_hor(btn_hdr_ams, HDR_AMS_PAD_X, 0);
   lv_obj_set_style_pad_ver(btn_hdr_ams, 0, 0);
-  lv_obj_set_style_bg_color(btn_hdr_ams, lv_color_hex(0x0d2040), 0);
-  lv_obj_set_style_bg_color(btn_hdr_ams, lv_color_hex(0x1a3060), LV_STATE_PRESSED);
+  lv_obj_set_style_bg_color(btn_hdr_ams, lv_color_hex(UI_COL_CHIP), 0);
+  lv_obj_set_style_bg_color(btn_hdr_ams, lv_color_hex(UI_COL_LINE), LV_STATE_PRESSED);
   lv_obj_set_style_border_width(btn_hdr_ams, 1, 0);
-  lv_obj_set_style_border_color(btn_hdr_ams, lv_color_hex(0x28d49a), 0);
+  lv_obj_set_style_border_color(btn_hdr_ams, lv_color_hex(UI_COL_ACCENT), 0);
   lv_obj_set_style_radius(btn_hdr_ams, 4, 0);
   lv_obj_set_style_shadow_width(btn_hdr_ams, 0, 0);
   lv_obj_add_flag(btn_hdr_ams, LV_OBJ_FLAG_HIDDEN);
@@ -329,7 +366,7 @@ void buildUI() {
 
   // Cap: Material (x=112, y=53)
   lv_obj_t *lbl_mat_cap = lv_label_create(lv_scr_act());
-  lv_label_set_text(lbl_mat_cap, "Material");
+  lv_label_set_text(lbl_mat_cap, T(STR_LBL_MATERIAL));
   lv_obj_set_style_text_color(lbl_mat_cap, lv_color_hex(0x4a6fa0), 0);
   lv_obj_set_style_text_font(lbl_mat_cap, &lv_font_montserrat_ext_12, 0);
   lv_obj_set_pos(lbl_mat_cap, 112, 53);

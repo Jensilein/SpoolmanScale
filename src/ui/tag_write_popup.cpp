@@ -12,9 +12,11 @@
 #include "confirm_popup.h"
 #include "info_popup.h"
 #include "second_tag_popup.h"
+#include "tag_busy_popup.h"
 #include "tag_display.h"
 #include "spool_flow.h"
 #include "ui_common.h"
+#include "ui/theme.h"
 
 // The house measurements for a two button question, same as confirm_popup.cpp:
 // buttons 170 wide with 12 px gutters on a 400 px box, and 18 px of air below
@@ -141,9 +143,13 @@ static void buildAsk(StringID title, StringID hint, StringID yes, StringID no) {
   lv_obj_set_style_pad_all(box, 0, 0);
   lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
 
+  // The erase is the one of the three that destroys something: a bin in red,
+  // the same glyph the tag view's erase button carries. The write and the
+  // rewrite keep the amber warning.
+  const bool erase = (s_mode == ASK_ERASE);
   lv_obj_t *icon = lv_label_create(box);
-  lv_label_set_text(icon, LV_SYMBOL_WARNING);
-  lv_obj_set_style_text_color(icon, lv_color_hex(0xf0b838), 0);
+  lv_label_set_text(icon, erase ? LV_SYMBOL_TRASH : LV_SYMBOL_WARNING);
+  lv_obj_set_style_text_color(icon, lv_color_hex(erase ? UI_COL_BAD_TEXT : UI_COL_WARN), 0);
   lv_obj_set_style_text_font(icon, &lv_font_montserrat_ext_24, 0);
   lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 14);
 
@@ -187,8 +193,12 @@ static void buildAsk(StringID title, StringID hint, StringID yes, StringID no) {
   lv_obj_t *btn_ok = lv_btn_create(box);
   lv_obj_set_size(btn_ok, BTN_W, BTN_H);
   lv_obj_set_pos(btn_ok, 12, BTN_Y);
-  lv_obj_set_style_bg_color(btn_ok, lv_color_hex(0x1a4020), 0);
-  lv_obj_set_style_bg_color(btn_ok, lv_color_hex(0x2a7030), LV_STATE_PRESSED);
+  // Green says "this is the good outcome", red "this stops something". For an
+  // erase that is backwards: the confirming answer is the destructive one, so
+  // it is red, and keeping the tag is the neutral way out.
+  lv_obj_set_style_bg_color(btn_ok, lv_color_hex(erase ? UI_COL_BAD_BG : UI_COL_OK_BG), 0);
+  lv_obj_set_style_bg_color(btn_ok, lv_color_hex(erase ? UI_COL_BAD_BG_PRESSED : UI_COL_OK_BG_PRESSED),
+                            LV_STATE_PRESSED);
   lv_obj_set_style_radius(btn_ok, 8, 0);
   lv_obj_set_style_shadow_width(btn_ok, 0, 0);
   lv_obj_add_event_cb(btn_ok, [](lv_event_t *e) {
@@ -198,16 +208,20 @@ static void buildAsk(StringID title, StringID hint, StringID yes, StringID no) {
     close_pending   = true;
   }, LV_EVENT_CLICKED, NULL);
   lv_obj_t *lbl_ok = lv_label_create(btn_ok);
-  { char bb[32]; copyT(bb, sizeof(bb), yes); lv_label_set_text(lbl_ok, bb); }
-  lv_obj_set_style_text_color(lbl_ok, lv_color_hex(0x80ffb0), 0);
+  { char bb[40];
+    if (erase) snprintf(bb, sizeof(bb), LV_SYMBOL_TRASH " %s", T(yes));
+    else       copyT(bb, sizeof(bb), yes);
+    lv_label_set_text(lbl_ok, bb); }
+  lv_obj_set_style_text_color(lbl_ok, lv_color_hex(erase ? UI_COL_BAD_TEXT : UI_COL_OK_TEXT), 0);
   lv_obj_set_style_text_font(lbl_ok, &lv_font_montserrat_ext_18, 0);
   lv_obj_center(lbl_ok);
 
   lv_obj_t *btn_no = lv_btn_create(box);
   lv_obj_set_size(btn_no, BTN_W, BTN_H);
   lv_obj_set_pos(btn_no, BOX_W - BTN_W - 12, BTN_Y);
-  lv_obj_set_style_bg_color(btn_no, lv_color_hex(0x3a1010), 0);
-  lv_obj_set_style_bg_color(btn_no, lv_color_hex(0x602020), LV_STATE_PRESSED);
+  lv_obj_set_style_bg_color(btn_no, lv_color_hex(erase ? UI_COL_LINE : UI_COL_BAD_BG), 0);
+  lv_obj_set_style_bg_color(btn_no, lv_color_hex(erase ? UI_COL_POPUP_BORDER : UI_COL_BAD_BG_PRESSED),
+                            LV_STATE_PRESSED);
   lv_obj_set_style_radius(btn_no, 8, 0);
   lv_obj_set_style_shadow_width(btn_no, 0, 0);
   lv_obj_add_event_cb(btn_no, [](lv_event_t *e) {
@@ -215,7 +229,7 @@ static void buildAsk(StringID title, StringID hint, StringID yes, StringID no) {
   }, LV_EVENT_CLICKED, NULL);
   lv_obj_t *lbl_no = lv_label_create(btn_no);
   { char cb[32]; copyT(cb, sizeof(cb), no); lv_label_set_text(lbl_no, cb); }
-  lv_obj_set_style_text_color(lbl_no, lv_color_hex(0xff8080), 0);
+  lv_obj_set_style_text_color(lbl_no, lv_color_hex(erase ? UI_COL_INK_2 : UI_COL_BAD_TEXT), 0);
   lv_obj_set_style_text_font(lbl_no, &lv_font_montserrat_ext_18, 0);
   lv_obj_center(lbl_no);
 }
@@ -225,10 +239,13 @@ void startTagWriteNoAsk(int spool_id) {
   s_spool_id = spool_id;
   s_mode     = ASK_WRITE;
   logSDf("TagWrite: writing spool %d without asking", spool_id);
+  // A question about the same tag waiting to be shown is answered by this.
+  mismatch_ask_pending = false;
   if (tagWriteRequest(spool_id, (TagFormat)g_tagwrite_fmt, false)) {
     // The same watch a confirmed question sets, so the result popup appears
     // through the one path that already knows how to show it.
     s_watching = true;
+    tagBusyShow(false);
   } else {
     showResult(TW_ERR_WRITE);
     logSD("TagWrite: writer busy, nothing queued");
@@ -252,6 +269,17 @@ static void showTagEraseAskPopup() {
            STR_TW_BTN_ERASE, STR_TW_BTN_KEEP);
 }
 
+void askTagEraseFromView() {
+  if (scr_tag_write || !tagIsWritableNtag()) return;
+  // Kept for the log and for the gate showTagEraseAskPopup() shares; the
+  // question itself names no format, it says what erasing does.
+  snprintf(s_erase_fmt, sizeof(s_erase_fmt), "%s",
+           tagCachedInfo()->fmt[0] ? tagCachedInfo()->fmt : "?");
+  s_mode = ASK_ERASE;
+  logSDf("SHOW: TagEraseAskPopup from the tag view, tag holds %s", s_erase_fmt);
+  buildAsk(STR_TV_ERASE_TITLE, STR_TV_ERASE_HINT, STR_TW_BTN_ERASE, STR_TW_BTN_KEEP);
+}
+
 // The decision was taken in tagMismatchTick(), which also built the two lines.
 static void showTagMismatchPopup() {
   if (scr_tag_write || !s_mismatch_detail[0]) return;
@@ -267,11 +295,24 @@ static void showTagMismatchPopup() {
 // The marker survives lifting the spool off the pad on purpose: answering
 // "keep" and being asked again the next time the same spool is weighed is the
 // behaviour testers reported as the most annoying thing the scale did.
-void tagMismatchTick() {
-  static char asked_uid[26] = "";
-  static int  asked_id = 0;
+// The tag and spool last asked about, or written: see tagMismatchTick().
+static char s_mism_asked_uid[26] = "";
+static int  s_mism_asked_id = 0;
 
+// A write of this spool to this tag settles the question. The cached record
+// the comparison reads is the one from before the write, so without this the
+// question came up right after a write that had worked, and "rewrite" wrote
+// the same thing a second and third time (log 25.09.2026, spool 226).
+static void mismatchSettle(const char* uid, int spool_id) {
+  snprintf(s_mism_asked_uid, sizeof(s_mism_asked_uid), "%s", uid);
+  s_mism_asked_id = spool_id;
+  mismatch_ask_pending = false;
+}
+
+void tagMismatchTick() {
   if (!g_tagmismatch_ask) return;
+  // Not while a write runs: it compares against what the tag held before.
+  if (s_watching || strcmp(tagWriteState(), "pending") == 0) return;
   if (!wifi_ok || !tag_present || !sm_found || sm_id <= 0) return;
   if (!tagIsWritableNtag() || !tagCachedHasRecord()) return;
   if (scr_tag_write || erase_ask_pending || mismatch_ask_pending) return;
@@ -285,11 +326,11 @@ void tagMismatchTick() {
       isSpoolFlowLinkEntryOpen() || isSecondTagPopupOpen())
     return;
 
-  if (asked_id == sm_id && strcmp(asked_uid, g_tag.uid_str) == 0) return;
+  if (s_mism_asked_id == sm_id && strcmp(s_mism_asked_uid, g_tag.uid_str) == 0) return;
   // Before the request, not after: the comparison costs a GET, and a pair that
   // turns out to agree must not pay for it again on the very next pass.
-  snprintf(asked_uid, sizeof(asked_uid), "%s", g_tag.uid_str);
-  asked_id = sm_id;
+  snprintf(s_mism_asked_uid, sizeof(s_mism_asked_uid), "%s", g_tag.uid_str);
+  s_mism_asked_id = sm_id;
 
   TagInfo want;
   if (!tagDiffersFromSpool(sm_id, (TagFormat)g_tagwrite_fmt, &want)) return;
@@ -317,12 +358,28 @@ void tagMismatchTick() {
   logSDf("Tag: spool %d disagrees with the tag, asking", sm_id);
 }
 
+int tagWriteAskSpool() {
+  if (!scr_tag_write || close_pending || s_mode == ASK_ERASE) return 0;
+  return s_spool_id;
+}
+
+bool tagWriteAskIsRewrite() { return s_mode == ASK_REWRITE; }
+
+void tagWriteAskAnswer(bool yes) {
+  if (!tagWriteAskSpool()) return;
+  logSDf("TagWritePopup: answered from the browser, %s", yes ? "yes" : "no");
+  confirm_pending = yes;
+  close_pending   = true;
+}
+
 void handleTagWritePopupDeferredActions() {
   // The result of a write or erase that is already running. tagWriteTick()
   // carries it out on this same loop task, so the state settles within a pass.
   if (s_watching && strcmp(tagWriteState(), "pending") != 0) {
     s_watching = false;
     const uint8_t code = tagWriteResultCode();
+    tagBusyHide();
+    if (code == TW_OK && s_mode != ASK_ERASE) mismatchSettle(g_tag.uid_str, s_spool_id);
     showResult(code);
     logSDf("TagWritePopup: finished, mode=%d code=%u", (int)s_mode,
            (unsigned)code);
@@ -352,7 +409,8 @@ void handleTagWritePopupDeferredActions() {
 
   if (mismatch_ask_pending) {
     mismatch_ask_pending = false;
-    showTagMismatchPopup();
+    // A write that started after the question was taken answers it.
+    if (!s_watching) showTagMismatchPopup();
   }
 
   if (!close_pending) return;
@@ -376,6 +434,10 @@ void handleTagWritePopupDeferredActions() {
                         : tagWriteRequest(s_spool_id, (TagFormat)g_tagwrite_fmt, false);
   if (queued) {
     s_watching = true;
+    // From here to the result the loop is busy with the tag and the screen
+    // would say nothing. The question is gone by now, so the pool holds one
+    // of the two at a time.
+    tagBusyShow(s_mode == ASK_ERASE);
   } else {
     // Only reachable when another write is still parked, which the tag page
     // could have started. Saying so beats a popup that closes and does nothing.

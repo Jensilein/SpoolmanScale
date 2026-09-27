@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-class WiFiClientSecure;
+#include <WiFiClientSecure.h>
 
 // Trust for every connection to GitHub: the certificate bundle the ESP-IDF
 // ships (Mozilla's root store, 64 kB of flash, linked only because this
@@ -24,9 +24,14 @@ void githubTrust(WiFiClientSecure &client);
 // the date, so asking for it costs nothing over asking for the tag. published
 // may be null for a caller that only wants the tag. err carries a short reason
 // on failure, fit to be shown as it is.
+// image_size, when given, receives the size of the release's firmware image,
+// 0 when it carries none: asked before a download that would not fit the app
+// slot of a device on the old partition table. Handed back rather than kept
+// in a global, because the loop and the web worker both look releases up.
 bool githubLatestTag(bool prerelease, char *tag, size_t tag_len,
                      char *published, size_t pub_len,
-                     char *err, size_t err_len);
+                     char *err, size_t err_len,
+                     uint32_t *image_size = nullptr);
 
 // One release as GitHub describes it. notes is the release body, markdown as
 // written, capped so a long one cannot take the heap with it.

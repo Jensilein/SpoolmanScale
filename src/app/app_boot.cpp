@@ -33,6 +33,77 @@
 #include "lang.h"
 
 // ============================================================
+//  WIFI CONNECTED
+// ============================================================
+// Everything a working connection starts. Boot calls it when the network
+// answers within its ten seconds. The reconnect watchdog in appLoop() calls it
+// when the network only answered later - a router still starting after a power
+// cut - which used to leave the radio connected and all of this off, web
+// interface and backend included, until the next restart.
+void wifiOnConnected() {
+  wifi_ok = true;
+  Serial.printf("WiFi OK! IP: %s\n", wifiManagerLocalIP().toString().c_str());
+  // Once here so the boot log names the address the user will type. The
+  // loop keeps it in step from then on.
+  mdnsSyncState();
+  deviceNameTick();
+  updateHeaderStatus();
+  syncNTP();
+  // The boot block and the connection line belong in the session log
+  // as well, so only the housekeeping stays behind the card check.
+  if (sd_available) cleanOldLogs();   // requires synced time
+  writeBootBlock("Boot");
+  logSDf("WiFi connected: %s | RSSI: %d dBm",
+    cfg_wifi_ssid, wifiManagerRSSI());
+  // Fix 2: immediate health check after WiFi connect, against whichever
+  // backend is active. The URL comes from backendBaseUrl() and the label
+  // from backendName(), so a log never claims the wrong product. The gate
+  // is deliberately not backendIsConfigured(): FilaMan serves /health
+  // without credentials, and a device missing its tokens is exactly the
+  // one where this line is worth having.
+  const char* backend_name = backendName();
+  if (strlen(backendBaseUrl()) > 7) {   // longer than "http://"
+    int code = backendGetHealthCode(backendBaseUrl(), 3000);
+    sm_reachable = (code == 200);
+    logSDf("%s health check: HTTP %d -> %s",
+      backend_name, code, sm_reachable ? "OK" : "FAIL");
+    Serial.printf("%s health: HTTP %d -> %s\n",
+      backend_name, code, sm_reachable ? "OK" : "FAIL");
+    // Server version, from /api/v1/info on Spoolman and /openapi.json on FilaMan
+    if (sm_reachable) {
+      backendAfterConnect();
+      char ver[32] = "?";
+      if (backendGetVersion(backendBaseUrl(), ver, sizeof(ver), 3000)) {
+        logSDf("%s version: %s", backend_name, ver);
+        Serial.printf("%s version: %s\n", backend_name, ver);
+      }
+    }
+  } else {
+    sm_reachable = false;
+    logSDf("%s health check skipped: no host configured", backend_name);
+    Serial.printf("%s health check skipped: no host configured\n", backend_name);
+  }
+  updateHeaderStatus();
+  lv_label_set_text(lbl_spoolman_weight, T(STR_WAIT_SCAN_SM));
+  lv_label_set_text(lbl_status, T(STR_WAIT_SCAN));
+  lv_obj_set_style_text_color(lbl_status, lv_color_hex(0xf0b838), 0);
+  lv_timer_handler();
+
+  // A spool put on the pad before the network came up was read but never
+  // looked up: the NTAG branch marks a tag handled whether or not its query
+  // ran, and the Bambu branch marks it queried although querySpoolman()
+  // returns at once without WiFi. Forgetting both is what lifting the spool
+  // off and back on does, so the next poll runs the whole lookup. At boot the
+  // pad is still unread; this is for the reconnect watchdog, which on
+  // 21.09.2026 brought the network at 14 s to a tag placed at 13 s - and the
+  // link that followed ended in "no tag UID".
+  if (tag_present) {
+    logSD("WiFi: a tag is already on the pad, looking it up now");
+    tagLookupForget();
+  }
+}
+
+// ============================================================
 //  CONNECT WIFI
 // ============================================================
 void wifiConnect() {
@@ -46,54 +117,8 @@ void wifiConnect() {
     lv_timer_handler();
   }
   if (wifiManagerConnect(cfg_wifi_ssid, cfg_wifi_password, 20, 500)) {
-      wifi_ok = true;
-      Serial.printf("WiFi OK! IP: %s\n", wifiManagerLocalIP().toString().c_str());
-      // Once here so the boot log names the address the user will type. The
-      // loop keeps it in step from then on.
-      mdnsSyncState();
-      deviceNameTick();
-      updateHeaderStatus();
-      syncNTP();
-      // The boot block and the connection line belong in the session log
-      // as well, so only the housekeeping stays behind the card check.
-      if (sd_available) cleanOldLogs();   // requires synced time
-      writeBootBlock("Boot");
-      logSDf("WiFi connected: %s | RSSI: %d dBm",
-        cfg_wifi_ssid, wifiManagerRSSI());
-      // Fix 2: immediate health check after WiFi connect, against whichever
-      // backend is active. The URL comes from backendBaseUrl() and the label
-      // from backendName(), so a log never claims the wrong product. The gate
-      // is deliberately not backendIsConfigured(): FilaMan serves /health
-      // without credentials, and a device missing its tokens is exactly the
-      // one where this line is worth having.
-      const char* backend_name = backendName();
-      if (strlen(backendBaseUrl()) > 7) {   // longer than "http://"
-        int code = backendGetHealthCode(backendBaseUrl(), 3000);
-        sm_reachable = (code == 200);
-        logSDf("%s health check: HTTP %d -> %s",
-          backend_name, code, sm_reachable ? "OK" : "FAIL");
-        Serial.printf("%s health: HTTP %d -> %s\n",
-          backend_name, code, sm_reachable ? "OK" : "FAIL");
-        // Server version, from /api/v1/info on Spoolman and /openapi.json on FilaMan
-        if (sm_reachable) {
-          backendAfterConnect();
-          char ver[32] = "?";
-          if (backendGetVersion(backendBaseUrl(), ver, sizeof(ver), 3000)) {
-            logSDf("%s version: %s", backend_name, ver);
-            Serial.printf("%s version: %s\n", backend_name, ver);
-          }
-        }
-      } else {
-        sm_reachable = false;
-        logSDf("%s health check skipped: no host configured", backend_name);
-        Serial.printf("%s health check skipped: no host configured\n", backend_name);
-      }
-      updateHeaderStatus();
-      lv_label_set_text(lbl_spoolman_weight, T(STR_WAIT_SCAN_SM));
-      lv_label_set_text(lbl_status, T(STR_WAIT_SCAN));
-      lv_obj_set_style_text_color(lbl_status, lv_color_hex(0xf0b838), 0);
-      lv_timer_handler();
-      return;
+    wifiOnConnected();
+    return;
   }
   Serial.println("WiFi FAILED - continuing without Spoolman");
   logSD("WiFi connection FAILED");
@@ -111,6 +136,14 @@ void wifiConnect() {
 // ============================================================
 void appSetup() {
   Serial.begin(115200);
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  // With the cable in a computer that does not read the port, core 3 waits
+  // up to 100 ms for every line that does not fit the USB buffer; core 2
+  // dropped them. At some 20 lines a pass that held the loop for 2 s, 30
+  // passes a minute instead of 7400 (24.09.2026). 0 drops them again, and a
+  // monitor that reads still gets everything.
+  Serial.setTxTimeoutMs(0);
+#endif
   delay(500);
   // Before anything else can leave one of its own: this reads what the
   // previous boot was doing when it stopped. writeBootBlock() prints it.

@@ -15,12 +15,17 @@
 #include "hardware/sd_logger.h"
 #include "services/backend.h"
 #include "services/backend_api.h"
+#include "services/backend_job.h"
 #include "services/prefs_store.h"
+#include "services/tag_field.h"
+#include "services/tag_link.h"
 #include "services/tag_write.h"
 #include "services/user_options.h"
 #include "web/web_access.h"
 #include "web/web_jobs.h"
 #include "web/web_shell.h"
+#include "ui/second_tag_popup.h"
+#include "ui/tag_write_popup.h"
 // Last on purpose: T() is a macro and ArduinoJson uses T as a template
 // parameter, so lang.h has to come after anything that pulls it in.
 #include "lang.h"
@@ -49,14 +54,25 @@ static const char* label() { return T(STR_W_NAV_TAGS); }
 
 static String body() {
   String h;
-  h.reserve(7600);
+  h.reserve(10000);
 
-  h += F("<div class='grid'><div class='card wide'><h2>");
+  h += F("<div class='grid'>"
+         "<div class='card wide'>"
+         "<div style='display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:14px'>"
+         "<h2 style='margin:0'>");
+  h += T(STR_W_C_ONSCALE);
+  h += F("</h2>"
+         "<div id='tg-uid' class='hint' style='margin:0'></div>"
+         "</div>"
+         "<div style='display:flex;flex-wrap:wrap;gap:12px'>"
+         "<div class='card' style='background:var(--surface-2);padding:14px;flex:1 1 280px;min-width:0' id='tg-cur'></div>"
+         "<div class='card' style='background:var(--surface-2);padding:14px;flex:1 1 280px;min-width:0' id='tg-matched'></div>"
+         "</div>"
+         "</div>"
+         "<div class='card wide'><h2>");
   h += T(STR_W_C_WRITETAG);
   h += F("</h2>"
-         "<div id='tg-uid' class='hint' style='margin-bottom:14px'></div>"
-         "<div class='grid' style='gap:12px'>"
-         "<div class='card' style='background:var(--surface-2);padding:14px' id='tg-cur'></div>"
+         "<div style='margin-bottom:14px'>"
          "<div class='card' style='background:var(--surface-2);padding:14px' id='tg-new'></div>"
          "</div>"
          "<div class='field' style='margin-top:14px'><label>");
@@ -79,7 +95,17 @@ static String body() {
          "<button id='tg-btn' onclick='writeTag()' disabled></button>"
          "<button id='tg-erase' class='danger' onclick='eraseTag()' disabled>");
   h += T(STR_W_TAG_ERASE);
-  h += F("</button><span class='msg' id='tg-s'></span></div>"
+  // Binds the tag without writing it: the one way in the browser for a tag
+  // that can only be read, and for an NTAG whose contents should stay.
+  h += F("</button><button id='tg-lnk' class='quiet' disabled>");
+  h += T(STR_W_TAG_LINKONLY);
+  h += F("</button></div>"
+         // What a write or a link is doing, and then how it ended: a panel of
+         // its own with a spinner or a mark, where a small green line beside
+         // the buttons used to be easy to miss (Nikolai, 25.09.2026).
+         "<div id='tg-st'></div>"
+         // The second tag: the scale's own flow, shown and driven from here.
+         "<div id='tg-t2'></div>"
          // Right under the buttons rather than above the fields: it is about
          // whether the write can happen at all, so it belongs where the write
          // is started.
@@ -129,19 +155,60 @@ static String body() {
          "<span class='msg' id='to-s'></span></div>"
          "<p class='note' style='margin-top:10px'>");
   h += T(STR_W_TAGOPT_NOTE);
-  h += F("</p></div></div>");
+  h += F("</p></div></div>"
+         "<div id='tg-modal' style='display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:9999;align-items:center;justify-content:center;padding:16px'>"
+         "<div class='card' style='max-width:560px;width:100%;margin:auto;box-shadow:0 10px 30px rgba(0,0,0,.6);background:var(--surface);padding:18px'>"
+         "<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:12px'>"
+         "<h3 style='margin:0;font-size:14px;color:var(--ink)'>");
+  h += T(STR_W_TAG_RAW_TITLE);
+  h += F("</h3></div>"
+         "<pre id='tg-raw-text' style='background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:12px;font-family:var(--mono);font-size:11.5px;color:var(--ink-2);max-height:300px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;margin:0'></pre>"
+         "<div style='display:flex;justify-content:flex-end;gap:10px;margin-top:14px'>"
+         "<button type='button' id='tg-copy-btn'>");
+  h += T(STR_W_COPY);
+  h += F("</button><button type='button' class='quiet' id='tg-raw-close'>");
+  h += T(STR_BT_CLOSE);
+  h += F("</button></div></div></div>");
 
   // Its own script. When the pages were split the shared block stayed behind
   // on the drying page, so every function this page calls was missing and the
   // whole page did nothing at all.
-  h += F("<style>#tg-cur h3,#tg-new h3{font-size:10.5px;font-weight:650;letter-spacing:.1em;"
-         "text-transform:uppercase;color:var(--ink-soft);margin-bottom:10px}"
+  h += F("<style>"
+         ".tghead{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}"
+         ".tgbadge{font-size:9.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;padding:2px 6px;border-radius:4px;background:var(--surface-1);border:1px solid var(--border);color:var(--ink-soft)}"
+         "#tg-cur h3,#tg-matched h3,#tg-new h3{font-size:10.5px;font-weight:650;"
+         "letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft);margin:0}"
          ".tgline{display:flex;align-items:center;gap:9px;margin-bottom:8px}"
          ".chip{width:26px;height:26px;border-radius:7px;border:1px solid #ffffff22;flex:none}"
          ".tgname{font-size:13.5px;color:var(--ink);line-height:1.3}"
-         "#tg-cur table td,#tg-new table td{font-size:11.5px;font-family:var(--mono);"
-         "color:var(--ink-3);padding:3px 8px 3px 0;border:0}"
-         "tr.diff td{color:var(--warn)}</style>");
+         ".tglink{color:var(--accent)}"
+         "#tg-cur table td,#tg-matched table td,#tg-new table td{font-size:11.5px;"
+         "font-family:var(--mono);color:var(--ink-3);padding:3px 8px 3px 0;border:0;"
+         "overflow-wrap:anywhere}"
+         "#tg-matched table{width:auto}"
+         "tr.diff td{color:var(--warn)}"
+         ".stt{display:flex;align-items:center;gap:12px;margin-top:16px;padding:12px 14px;border-radius:10px;"
+         "border:1px solid var(--line);background:var(--surface-2);font-size:13.5px;color:var(--ink)}"
+         ".stt .ico{width:22px;height:22px;flex:none;display:grid;place-items:center;border-radius:50%;font-size:13px;font-weight:700}"
+         ".stt.busy .ico{border:3px solid var(--line);border-top-color:var(--accent);animation:tgsp 1s linear infinite}"
+         ".stt.ok{border-color:var(--accent);background:var(--accent-dim)}"
+         ".stt.ok .ico{background:var(--accent);color:var(--ground)}"
+         ".stt.bad{border-color:var(--bad)}"
+         ".stt.bad .ico{background:var(--bad);color:var(--ground)}"
+         ".stt .sub{display:block;color:var(--ink-soft);font-size:12px;margin-top:2px}"
+         ".tgbar{position:relative;height:4px;border-radius:2px;background:var(--line);overflow:hidden;margin-top:8px}"
+         ".tgbar i{position:absolute;top:0;bottom:0;left:0;width:35%;background:var(--accent);border-radius:2px;animation:tgind 1.3s ease-in-out infinite}"
+         ".tgbar.drain i{animation:none;transition:width 1s linear}"
+         "button.busy{display:inline-flex;align-items:center;gap:8px}"
+         "button.busy::before{content:'';width:13px;height:13px;border-radius:50%;border:2px solid currentColor;"
+         "border-top-color:transparent;animation:tgsp .9s linear infinite}"
+         ".t2{margin-top:16px;padding:16px;border-radius:12px;border:1px solid var(--line);background:var(--surface-2)}"
+         ".t2.warn{border-color:var(--warn)}"
+         ".t2 h3{font-size:14.5px;color:var(--ink);margin:0 0 6px;text-transform:none;letter-spacing:0}"
+         ".t2 p{color:var(--ink-soft);font-size:13px;margin:0 0 12px}"
+         ".t2cnt{font-family:var(--mono);font-size:12px;color:var(--warn)}"
+         "@keyframes tgsp{to{transform:rotate(360deg)}}"
+         "@keyframes tgind{0%{left:-35%}100%{left:100%}}</style>");
 
   h += F("<script>const TO={saved:");
   h += jsStr(T(STR_W_SAVED));
@@ -194,40 +261,173 @@ static String body() {
   h += F(",dia:");     h += jsStr(T(STR_W_TAG_DIA));
   h += F(",len:");     h += jsStr(T(STR_W_TAG_LENGTH));
   h += F(",toosmall:"); h += jsStr(T(STR_W_TAG_TOOSMALL));
+  h += F(",norec:");   h += jsStr(T(STR_W_TAG_NOREC));
+  h += F(",ro:");      h += jsStr(T(STR_TW_ERR_NOT_NTAG));
+  h += F(",tray:");    h += jsStr(T(STR_W_TAG_TRAY));
+  h += F(",prod:");    h += jsStr(T(STR_LBL_PRODUCTION_DATE));
+  h += F(",onscale:"); h += jsStr(T(STR_W_TAG_ONSCALE));
+  h += F(",nospool:"); h += jsStr(T(STR_W_TAG_NOSPOOL));
+  h += F(",remain:");  h += jsStr(T(STR_AMSD_REMAINING));
+  h += F(",total:");   h += jsStr(T(STR_LBL_TOTAL_CAP));
+  h += F(",tare:");    h += jsStr(T(STR_LBL_SPOOL_WEIGHT_EMPTY));
+  h += F(",loc:");     h += jsStr(T(STR_BTN_LOCATION));
+  h += F(",art:");     h += jsStr(T(STR_LBL_ARTICLE_NO_SHORT));
+  h += F(",used:");    h += jsStr(T(STR_LBL_LAST_USED));
+  h += F(",dried:");   h += jsStr(T(STR_LBL_LAST_DRIED));
+  h += F(",rolink:");  h += jsStr(T(STR_W_TAG_RO_LINK));
+  h += F(",lask:");    h += jsStr(T(STR_W_TL_ASK_REPLACE));
+  h += F(",ladd:");    h += jsStr(T(STR_W_TL_ASK_ADD));
+  h += F(",lbusy:");   h += jsStr(T(STR_W_TL_REFUSED));
+  h += F(",twref:");   h += jsStr(T(STR_W_TW_REFUSED));
+  h += F(",badge:");   h += jsStr(T(STR_W_TAG_BADGE_TAG));
+  h += F(",prev:");    h += jsStr(T(STR_W_TAG_PREVIEW));
+  h += F(",notlinked:"); h += jsStr(T(STR_W_TAG_NOTLINKED));
+  h += F(",sid:");     h += jsStr(T(STR_W_TAG_SPOOLID));
+  h += F(",proto:");   h += jsStr(T(STR_W_TAG_PROTO));
+  h += F(",raw:");     h += jsStr(T(STR_W_TAG_RAW));
+  h += F(",copied:");  h += jsStr(T(STR_W_COPIED));
+  h += F(",spool:");   h += jsStr(T(STR_W_TAG_SPOOL));
+  h += F(",busybtn:"); h += jsStr(T(STR_W_TW_BUSY_BTN));
+  h += F(",keep:");    h += jsStr(T(STR_W_TW_KEEP));
+  h += F(",retry:");   h += jsStr(T(STR_W_TW_RETRY));
+  h += F(",t2offer:"); h += jsStr(T(STR_W_T2_OFFER));
+  h += F(",t2hint:");  h += jsStr(T(STR_W_T2_OFFER_HINT));
+  h += F(",t2start:"); h += jsStr(T(STR_W_T2_START));
+  h += F(",t2done:");  h += jsStr(T(STR_W_T2_DONE_BTN));
+  h += F(",t2wait:");  h += jsStr(T(STR_W_T2_WAIT));
+  h += F(",t2whint:"); h += jsStr(T(STR_W_T2_WAIT_HINT));
+  h += F(",t2left:");  h += jsStr(T(STR_W_T2_LEFT));
+  h += F(",t2link:");  h += jsStr(T(STR_W_T2_LINKING));
+  h += F(",t2ok:");    h += jsStr(T(STR_W_T2_OK));
+  h += F(",t2okh:");   h += jsStr(T(STR_W_T2_OK_HINT));
+  h += F(",t2fail:");  h += jsStr(T(STR_W_T2_FAIL));
+  h += F(",t2exp:");   h += jsStr(T(STR_W_T2_EXPIRED));
+  h += F(",askw:");    h += jsStr(T(STR_W_ASK_WRITE));
+  h += F(",askot:");   h += jsStr(T(STR_W_ASK_OVER_TITLE));
+  h += F(",asko:");    h += jsStr(T(STR_W_ASK_OVER));
+  h += F(",yeso:");    h += jsStr(T(STR_W_ASK_YES_OVER));
+  h += F(",yesw:");    h += jsStr(T(STR_W_ASK_YES_WRITE));
+  h += F(",cancel:");  h += jsStr(T(STR_CANCEL));
   h += F("};"
-         "let tgCur='',tgNew='',tgLinked='',tgUid='',tgCurI=null,tgNewI=null,"
-         "tgBytes=0,tgNeed=0;"
-         "function esc(t){return String(t).replace(/[<>&]/g,c=>"
-         "({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));}"
+         "let tgCur='',tgRaw='',tgNew='',tgLinked='',tgUid='',tgBackend='',tgCurI=null,tgNewI=null,tgMatched=null,"
+         "tgBytes=0,tgNeed=0,tgKindCode=0,tgAdds=false,tgState='idle',"
+         // The second tag: which spool this page wrote, when, and whether the
+         // offer was turned down.
+         "tgWroteId=0,tgWroteAt=0,tgT2Off=false,tgT2Tick=0;"
+         "function showRawModal(){"
+         "const m=document.getElementById('tg-modal');"
+         "const t=document.getElementById('tg-raw-text');"
+         "if(!m||!t)return;let txt=tgRaw||'';"
+         "try{txt=JSON.stringify(JSON.parse(txt),null,2);}catch(e){}"
+         "t.textContent=txt;m.style.display='flex';}"
+         "function closeRawModal(){"
+         "const m=document.getElementById('tg-modal');if(m)m.style.display='none';}"
+         "function copyRawData(){"
+         "const t=document.getElementById('tg-raw-text');if(!t)return;"
+         "navigator.clipboard.writeText(t.textContent).then(()=>{"
+         "const b=document.getElementById('tg-copy-btn');"
+         "if(b){const o=b.textContent;b.textContent=M.copied;setTimeout(()=>{b.textContent=o;},2000);}"
+         "}).catch(()=>{});}"
+         // The quote as well: esc() also fills an href.
+         "function esc(t){return String(t).replace(/[<>&\"]/g,c=>"
+         "({'<':'&lt;','>':'&gt;','&':'&amp;','\"':'&quot;'}[c]));}"
          // A row is only drawn when the side it belongs to has the field, and
          // it is highlighted when the two sides disagree - that difference is
          // the whole reason both are shown.
          "function row(k,a,b){if(a===undefined&&b===undefined)return '';"
          "const d=(a!==undefined&&b!==undefined&&a!==b)?' class=\"diff\"':'';"
          "return '<tr'+d+'><td>'+k+'</td><td>'+esc(a===undefined?'-':a)+'</td></tr>';}"
-         "function plain(el,t,x){el.innerHTML='<h3>'+t+'</h3>'"
-         "+'<div class=\"hint\">'+x+'</div>';}"
-         "function swatch(el,i,o,t,empty){if(!el)return;"
-         "if(!i||!i.fmt){plain(el,t,empty);return;}"
-         "if(i.fmt=='blank'){plain(el,t,M.blank);return;}"
-         "if(i.fmt=='unknown'){plain(el,t,M.unk);return;}"
-         "o=o||{};"
-         "el.innerHTML='<h3>'+t+'</h3>'"
-         "+'<div class=\"tgline\"><div class=\"chip\" style=\"background:'"
-         "+(i.color||'#101828')+'\"></div>'"
-         "+'<div><div class=\"tgname\">'+esc(i.brand||'')+' '+esc(i.material||'')+'</div>'"
-         "+'<div class=\"hint\">'+esc(i.fmt)+(i.color?' - '+esc(i.color):'')+'</div></div></div>'"
+         // The spool card has one side only, and an empty field is no row -
+         // "-" included, which is how the device says "never" for a date.
+         "function one(k,v){return(v===undefined||v===null||v===''||v==='-')?'':row(k,v);}"
+         "function cardHead(t,b){return '<div class=\"tghead\"><h3>'+t+'</h3><span class=\"tgbadge\">'+b+'</span></div>';}"
+         "function head(c,n,x){return '<div class=\"tgline\"><div class=\"chip\" style=\"background:'"
+         "+(c||'#101828')+'\"></div><div><div class=\"tgname\">'+n+'</div>'"
+         "+'<div class=\"hint\">'+x+'</div></div></div>';}"
+         "function renderCurTag(el){if(!el)return;"
+         "const h=cardHead(M.cur,M.badge);"
+         "if(!tgUid){el.innerHTML=h+'<div class=\"hint\">'+M.notag+'</div>';return;}"
+         // A class, not an onclick: the listener is bound once, below.
+         "const rawBtn='<div style=\"margin-top:12px\"><button type=\"button\" class=\"quiet tgraw\" style=\"font-size:11px;padding:3px 8px\">'+M.raw+'</button></div>';"
+         "const i=tgCurI;"
+         "if(!i||!i.fmt||i.fmt==='blank'){"
+         "el.innerHTML=h+'<div class=\"hint\">'+M.blank+'</div>'+rawBtn;return;}"
+         "if(i.fmt==='unknown'){"
+         "el.innerHTML=h+'<div class=\"hint\">'+M.unk+'</div>'+rawBtn;return;}"
+         "if(i.fmt==='unsupported'){"
+         "el.innerHTML=h+'<div class=\"hint\">'+M.norec+'</div>'+rawBtn;return;}"
+         "const o=tgNewI||{};"
+         "let rows='';"
+         "if(i.spool_id||o.spool_id)rows+=row(M.sid,i.spool_id?'#'+i.spool_id:undefined,o.spool_id?'#'+o.spool_id:undefined);"
+         "if(i.proto||o.proto){"
+         "const pA=i.proto?(i.proto+(i.version?' v'+i.version:'')):undefined;"
+         "const pB=o.proto?(o.proto+(o.version?' v'+o.version:'')):undefined;"
+         "rows+=row(M.proto,pA,pB);}"
+         "rows+=row(M.sku,i.sku,o.sku);"
+         "rows+=row(M.nozzle,i.nozzle?i.nozzle+' C':undefined,o.nozzle?o.nozzle+' C':undefined);"
+         "rows+=row(M.bed,i.bed?i.bed+' C':undefined,o.bed?o.bed+' C':undefined);"
+         "rows+=row(M.weight,i.weight?i.weight+' g':undefined,o.weight?o.weight+' g':undefined);"
+         "rows+=row(M.dia,i.dia?i.dia+' mm':undefined,o.dia?o.dia+' mm':undefined);"
+         "rows+=row(M.len,i.len?i.len+' m':undefined,o.len?o.len+' m':undefined);"
+         "rows+=row(M.prod,i.prod_date,o.prod_date);"
+         "rows+=row(M.tray,i.tray_uuid,o.tray_uuid);"
+         "const bm=[i.brand,i.material].filter(Boolean).map(esc).join(' ');"
+         "el.innerHTML=h"
+         "+head(i.color,bm||M.spool,"
+         "esc(i.fmt)+(i.color?' - '+esc(i.color):''))"
+         "+'<table>'+rows+'</table>'+rawBtn;}"
+         "function renderMatchedSpool(el){if(!el)return;"
+         "const bName=tgBackend||'';"
+         "const h=cardHead(M.onscale,esc(bName));"
+         // The spool the scale shows, which is not necessarily the tag's: one
+         // picked from the list stays after its tag is lifted.
+         "const m=tgMatched;"
+         "if(!m||!m.found){el.innerHTML=h+'<div class=\"hint\">'"
+         "+(tgUid?M.notlinked.replace('%s',esc(bName)):M.nospool)+'</div>';return;}"
+         "const id=m.url?'<a class=\"tglink\" href=\"'+esc(m.url)+'\" target=\"_blank\" rel=\"noopener\">#'"
+         "+m.id+'</a>':'#'+m.id;"
+         "const vm=[m.vendor,m.material].filter(Boolean).map(esc).join(' ');"
+         "let fn=esc(m.name||'');"
+         "if(vm&&fn.startsWith(vm))fn=fn.slice(vm.length).replace(/^[\\s\\-_:]+/,'');"
+         "let sub=id;"
+         "if(fn&&fn!==vm)sub+=' - '+fn;"
+         "let b='';(m.binds||[]).forEach(x=>{b+=one(esc(x.k),x.v);});"
+         "el.innerHTML=h"
+         "+head(m.color,vm||fn||M.spool,sub)"
          "+'<table>'"
-         "+row(M.sku,i.sku,o.sku)"
-         "+row(M.nozzle,i.nozzle?i.nozzle+' C':undefined,o.nozzle?o.nozzle+' C':undefined)"
-         "+row(M.bed,i.bed?i.bed+' C':undefined,o.bed?o.bed+' C':undefined)"
-         "+row(M.weight,i.weight?i.weight+' g':undefined,o.weight?o.weight+' g':undefined)"
-         "+row(M.dia,i.dia?i.dia+' mm':undefined,o.dia?o.dia+' mm':undefined)"
-         "+row(M.len,i.len?i.len+' m':undefined,o.len?o.len+' m':undefined)"
+         "+one(M.remain,m.total?m.remaining+' / '+m.total+' g':undefined)"
+         "+one(M.tare,m.tare?m.tare+' g':undefined)"
+         "+one(M.loc,m.location)+one(M.art,m.article_nr)"
+         "+one(M.used,m.last_used)+one(M.dried,m.last_dried)+b"
          "+'</table>';}"
+         "function renderNewPreview(el){if(!el)return;"
+         "const h=cardHead(M.will,M.prev);"
+         "const i=tgNewI;"
+         "if(!i||!i.fmt){el.innerHTML=h+'<div class=\"hint\">'+M.pickf+'</div>';return;}"
+         "const o=tgCurI||{};"
+         "let rows='';"
+         "if(i.spool_id||o.spool_id)rows+=row(M.sid,i.spool_id?'#'+i.spool_id:undefined,o.spool_id?'#'+o.spool_id:undefined);"
+         "if(i.proto||o.proto){"
+         "const pA=i.proto?(i.proto+(i.version?' v'+i.version:'')):undefined;"
+         "const pB=o.proto?(o.proto+(o.version?' v'+o.version:'')):undefined;"
+         "rows+=row(M.proto,pA,pB);}"
+         "rows+=row(M.sku,i.sku,o.sku);"
+         "rows+=row(M.nozzle,i.nozzle?i.nozzle+' C':undefined,o.nozzle?o.nozzle+' C':undefined);"
+         "rows+=row(M.bed,i.bed?i.bed+' C':undefined,o.bed?o.bed+' C':undefined);"
+         "rows+=row(M.weight,i.weight?i.weight+' g':undefined,o.weight?o.weight+' g':undefined);"
+         "rows+=row(M.dia,i.dia?i.dia+' mm':undefined,o.dia?o.dia+' mm':undefined);"
+         "rows+=row(M.len,i.len?i.len+' m':undefined,o.len?o.len+' m':undefined);"
+         "rows+=row(M.prod,i.prod_date,o.prod_date);"
+         "rows+=row(M.tray,i.tray_uuid,o.tray_uuid);"
+         "const bm=[i.brand,i.material].filter(Boolean).map(esc).join(' ');"
+         "el.innerHTML=h"
+         "+head(i.color,bm||M.spool,"
+         "esc(i.fmt)+(i.color?' - '+esc(i.color):''))"
+         "+'<table>'+rows+'</table>';}"
          "function tgDraw(){"
-         "swatch(document.getElementById('tg-cur'),tgCurI,tgNewI,M.cur,M.notag);"
-         "swatch(document.getElementById('tg-new'),tgNewI,tgCurI,M.will,M.pickf);}"
+         "renderCurTag(document.getElementById('tg-cur'));"
+         "renderMatchedSpool(document.getElementById('tg-matched'));"
+         "renderNewPreview(document.getElementById('tg-new'));}"
          "function tgSync(){tgDraw();const b=document.getElementById('tg-btn');if(!b)return;"
          // Said before the write, not after it. The capacity check inside the
          // firmware refuses the same tag, but only once the user has already
@@ -236,14 +436,23 @@ static String body() {
          "const fs=document.getElementById('tg-fmt');"
          "const fn=fs&&fs.selectedOptions[0]?fs.selectedOptions[0].textContent:'';"
          "const n=document.getElementById('tg-note');"
-         "if(n)n.textContent=!tgNew?M.pickf:small"
+         "const er=document.getElementById('tg-erase');"
+         // The kind alone decides. An NTAG that reports no size is still
+         // writable, and the write itself says so if it does not fit.
+         "const ro=tgKindCode===1;"
+         // Any tag can be linked, a read-only one included; it needs a spool.
+         "const lk=document.getElementById('tg-lnk');"
+         "if(lk)lk.disabled=!tgUid||!parseInt(document.getElementById('tg-id').value);"
+         "if(n)n.textContent=ro?M.rolink:!tgNew?M.pickf:small"
          "?M.toosmall.replace('%s',fn).replace('%u',tgNeed).replace('%u',tgBytes)"
          // tgLinked is already "a different tag than the one on the reader" - the
          // comparison used to happen here and compared "047F3ABBD12A81" against
          // "04:7F:3A:BB:D1:2A:81", so the warning appeared for the very tag the
          // user was holding.
          ":(tgLinked?M.relink.replace('%s',tgLinked):'');"
-         "const er=document.getElementById('tg-erase');"
+         "b.classList.toggle('busy',tgState==='pending');"
+         "if(tgState==='pending'){b.disabled=true;b.textContent=M.busybtn;if(er)er.disabled=true;return;}"
+         "if(ro){b.disabled=true;b.textContent=M.write;if(er)er.disabled=true;return;}"
          "if(er)er.disabled=!tgUid||tgCur=='blank';"
          "if(!tgNew){b.disabled=true;b.textContent=M.write;return;}"
          "if(small){b.disabled=true;b.textContent=M.write;return;}"
@@ -251,7 +460,7 @@ static String body() {
          "else{b.disabled=false;b.textContent=tgCur&&tgCur!='blank'?M.over:M.write;}}"
          "function loadPreview(){const v=parseInt(document.getElementById('tg-id').value);"
          "const f=document.getElementById('tg-fmt').value;"
-         "if(!v){tgNew='';tgNewI=null;tgSync();return;}"
+         "if(!v){document.getElementById('tg-pick').value='';tgNew='';tgNewI=null;tgSync();return;}"
          "fetch('/api/tag/preview?id='+v+'&fmt='+f).then(r=>r.json()).then(d=>{"
          "tgNew=d.ok?d.preview:'';tgLinked=d.ok?(d.linked||''):'';"
          "tgNeed=d.ok?(d.need||0):0;"
@@ -259,8 +468,10 @@ static String body() {
          ".catch(()=>{tgNew='';tgNewI=null;tgNeed=0;tgSync();});}"
          "function setOpt(p,t){p.innerHTML='';const o=document.createElement('option');"
          "o.value='';o.textContent=t;p.appendChild(o);}"
+         // Back to "pick a spool" empties the number too, or the preview of
+         // the spool picked before would stay standing.
          "function pickSpool(){const p=document.getElementById('tg-pick');"
-         "if(p.value)document.getElementById('tg-id').value=p.value;loadPreview();}"
+         "document.getElementById('tg-id').value=p.value||'';loadPreview();}"
          // 202 means the device is still fetching; asked again until it is not.
          "function loadSpools(n){const p=document.getElementById('tg-pick');if(!p)return;"
          "if(!n)setOpt(p,M.pick);"
@@ -276,24 +487,92 @@ static String body() {
          "function tgPoll(){fetch('/api/tag').then(r=>r.json()).then(d=>{"
          "document.getElementById('tg-uid').textContent="
          "d.uid?(M.onread+' '+d.uid+' ('+d.kind+')'):M.notag;"
-         "tgUid=d.uid||'';tgCurI=d.uid?d.info:null;tgBytes=d.bytes||0;"
-         "tgCur=d.content||'';tgSync();"
-         "const s=document.getElementById('tg-s');"
-         "if(d.state!='idle'){s.textContent=d.message;"
-         "s.className='msg'+(d.state=='error'?' bad':'');}}).catch(()=>{});}"
-         "function after(){setTimeout(tgPoll,1500);setTimeout(tgPoll,4000);}"
+         "tgUid=d.uid||'';tgCurI=d.uid?d.info:null;tgBytes=d.bytes||0;tgKindCode=d.kindcode||0;"
+         "tgBackend=d.backend||'';tgCur=d.content||'';tgRaw=d.raw||'';tgMatched=d.matched;tgAdds=!!d.linkadds;"
+         "tgState=d.state||'idle';tgSync();"
+         // The write first, the link second: a write that links says both in
+         // its one sentence.
+         "if(d.state=='pending')stat('busy',d.message,M.keep,true);"
+         "else if(d.state=='ok')stat('ok',d.message,'');"
+         "else if(d.state=='error')stat('bad',d.message,M.retry);"
+         "else if(d.linkstate=='pending')stat('busy',d.linkmsg,'',true);"
+         "else if(d.linkstate=='ok')stat('ok',d.linkmsg,'');"
+         "else if(d.linkstate=='error')stat('bad',d.linkmsg,'');"
+         "else stat('','','');"
+         "second(d);}).catch(()=>{});}"
+         // One panel for whatever runs: a spinner and a moving bar while it
+         // does, a mark and a coloured frame once it is done.
+         "function stat(k,t,sub,bar){const el=document.getElementById('tg-st');if(!el)return;"
+         "if(!t){el.innerHTML='';return;}"
+         "el.innerHTML='<div class=\"stt '+k+'\"><span class=\"ico\">'+(k=='ok'?'&#10003;':k=='bad'?'!':'')+'</span>'"
+         "+'<div style=\"flex:1;min-width:0\">'+esc(t)+(sub?'<span class=\"sub\">'+esc(sub)+'</span>':'')"
+         "+(bar?'<div class=\"tgbar\"><i></i></div>':'')+'</div></div>';}"
+         // The second tag. The scale runs the flow; this card shows where it
+         // stands and answers its questions. data-* and one listener below,
+         // never a handler written into the markup.
+         "function second(d){const el=document.getElementById('tg-t2');if(!el)return;"
+         // An outcome from before the last write on this page is not shown:
+         // it would stand where the offer for the new spool belongs.
+         "const t=d.t2||{},a=d.ask||{},fresh=t.age<60000&&(!tgWroteAt||t.age<Date.now()-tgWroteAt);let h='';"
+         "if(a.spool){const i=tgCurI,full=i&&i.fmt&&i.fmt!=='blank';"
+         "h='<div class=\"t2'+(full?' warn':'')+'\"><h3>'+(full?M.askot:M.askw.replace('%d',a.spool))+'</h3>'"
+         "+(full?head(i.color,[i.brand,i.material].filter(Boolean).map(esc).join(' '),esc(i.fmt)+(i.color?' - '+esc(i.color):''))"
+         "+'<p>'+M.asko.replace('%d',a.spool)+'</p>':'')"
+         "+'<div class=\"inrow\"><button type=\"button\" data-ans=\"1\">'+(full?M.yeso:M.yesw)+'</button>'"
+         "+'<button type=\"button\" class=\"quiet\" data-ans=\"0\">'+M.cancel+'</button></div></div>';}"
+         "else if(t.st==1){const w=Math.round(100*t.left/30);"
+         "h='<div class=\"t2\"><h3>'+M.t2wait+'</h3><p>'+M.t2whint+'</p>'"
+         "+'<div class=\"t2cnt\">'+M.t2left.replace('%d',t.left)+'</div>'"
+         "+'<div class=\"tgbar drain\"><i style=\"width:'+w+'%\"></i></div>'"
+         "+'<div class=\"inrow\" style=\"margin-top:14px\"><button type=\"button\" class=\"quiet\" data-t2=\"cancel\">'+M.cancel+'</button></div></div>';}"
+         "else if(t.st==2&&fresh)h='<div class=\"stt busy\"><span class=\"ico\"></span><div>'+M.t2link+'</div></div>';"
+         "else if(t.st==3&&fresh)h='<div class=\"stt ok\"><span class=\"ico\">&#10003;</span><div>'+M.t2ok"
+         "+'<span class=\"sub\">'+M.t2okh.replace('%d',t.spool)+'</span></div></div>';"
+         "else if(t.st==4&&fresh)h='<div class=\"stt bad\"><span class=\"ico\">!</span><div>'+M.t2fail+'</div></div>';"
+         "else if(t.st==5&&fresh)h='<p class=\"hint\" style=\"margin-top:12px\">'+M.t2exp+'</p>';"
+         // The offer, after a write from this page, when the backend can hold
+         // two tags and the scale did not already ask of its own accord.
+         "else if(d.state=='ok'&&d.t2can&&tgWroteId&&!tgT2Off&&!(t.st&&t.age<Date.now()-tgWroteAt))"
+         "h='<div class=\"t2\"><h3>'+M.t2offer+'</h3><p>'+M.t2hint+'</p>'"
+         "+'<div class=\"inrow\"><button type=\"button\" data-t2=\"start\">'+M.t2start+'</button>'"
+         "+'<button type=\"button\" class=\"quiet\" data-t2=\"off\">'+M.t2done+'</button></div></div>';"
+         // The countdown in whole seconds while the scale waits, not in the
+         // three-second steps of the page's own poll.
+         "if(t.st==1&&!tgT2Tick)tgT2Tick=setTimeout(()=>{tgT2Tick=0;tgPoll();},1000);"
+         "if(el.innerHTML!==h)el.innerHTML=h;}"
+         "function after(){setTimeout(tgPoll,700);setTimeout(tgPoll,1500);setTimeout(tgPoll,4000);}"
          "function eraseTag(){if(!confirm(M.eraseq))return;"
          "fetch('/api/tag/write',{method:'POST',body:'0,2,0'})"
-         ".then(r=>r.json()).then(d=>{document.getElementById('tg-s').textContent="
-         "d.message||M.queued;}).catch(()=>{});after();}"
+         ".then(r=>r.json()).then(d=>{if(d.ok)stat('busy',M.queued,M.keep,true);else stat('bad',M.twref,'');})"
+         ".catch(()=>{});after();}"
          "function writeTag(){const v=parseInt(document.getElementById('tg-id').value);"
-         "if(!v){document.getElementById('tg-s').textContent=M.pickf;return;}"
+         "if(!v){stat('bad',M.pickf,'');return;}"
          "const f=document.getElementById('tg-fmt').value;"
          "const l=document.getElementById('tg-link').checked?1:0;"
+         "tgWroteId=l?v:0;tgWroteAt=Date.now();tgT2Off=false;"
          "fetch('/api/tag/write',{method:'POST',body:v+','+f+','+l})"
-         ".then(r=>r.json()).then(d=>{document.getElementById('tg-s').textContent="
-         "d.message||M.queued;}).catch(()=>{});after();}"
+         ".then(r=>r.json()).then(d=>{if(d.ok)stat('busy',M.queued,M.keep,true);else stat('bad',M.twref,'');})"
+         ".catch(()=>{});after();}"
+         // The spool already carries a different tag: say what linking does to
+         // it before doing it. tgLinked comes from the preview of the picked
+         // spool and is empty when that tag is the one on the reader.
+         "function linkTag(){const v=parseInt(document.getElementById('tg-id').value);"
+         "if(!v||!tgUid)return;"
+         "if(tgLinked&&!confirm((tgAdds?M.ladd:M.lask).replace('%d',v).replace('%s',tgLinked)))return;"
+         "fetch('/api/tag/link',{method:'POST',body:v+','+tgUid})"
+         ".then(r=>r.json()).then(d=>{if(!d.ok)stat('bad',M.lbusy,'');})"
+         ".catch(()=>{});after();}"
          "document.addEventListener('DOMContentLoaded',()=>{"
+         "const lk=document.getElementById('tg-lnk');if(lk)lk.addEventListener('click',linkTag);"
+         "document.getElementById('tg-copy-btn').addEventListener('click',copyRawData);"
+         "document.getElementById('tg-raw-close').addEventListener('click',closeRawModal);"
+         "document.getElementById('tg-modal').addEventListener('click',e=>{if(e.target.id==='tg-modal')closeRawModal();});"
+         "document.addEventListener('click',e=>{const t=e.target.closest('button');if(!t)return;"
+         "if(t.classList.contains('tgraw')){showRawModal();return;}"
+         "if(t.dataset.ans){fetch('/api/tag/answer',{method:'POST',body:t.dataset.ans}).catch(()=>{});after();return;}"
+         "if(t.dataset.t2=='off'){tgT2Off=true;tgPoll();return;}"
+         "if(t.dataset.t2=='start'){fetch('/api/tag/second',{method:'POST',body:'start,'+tgWroteId}).catch(()=>{});after();return;}"
+         "if(t.dataset.t2=='cancel'){fetch('/api/tag/second',{method:'POST',body:'cancel'}).catch(()=>{});after();}});"
          "tgPoll();setInterval(tgPoll,3000);loadSpools();tgSync();});"
          "</script>");
   return h;
@@ -372,6 +651,90 @@ static String tagKindLocal() {
   return out;
 }
 
+// Where a link from this page stands, for the poll. OK covers "already bound",
+// which is not a failure: the spool is found by that tag either way.
+static const char* tagLinkStateName() {
+  switch (tagLinkReportData()->code) {
+    case TL_NONE:    return "idle";
+    case TL_BUSY:    return "pending";
+    case TL_OK:
+    case TL_ALREADY: return "ok";
+    default:         return "error";
+  }
+}
+
+// The same for the sentence, which tag_link.cpp cannot build in the user's
+// language.
+static String tagLinkMessageLocal() {
+  const TagLinkReport *r = tagLinkReportData();
+  char buf[192];
+  switch (r->code) {
+    case TL_NONE:    return String("");
+    case TL_BUSY:    snprintf(buf, sizeof(buf), T(STR_W_TL_BUSY), r->spool_id); break;
+    case TL_OK:      snprintf(buf, sizeof(buf), T(STR_W_TL_OK), r->spool_id); break;
+    case TL_ALREADY: snprintf(buf, sizeof(buf), T(STR_W_TL_ALREADY), r->spool_id); break;
+    case TL_HELD:    snprintf(buf, sizeof(buf), T(STR_W_TL_HELD), r->other_spool); break;
+    case TL_CHANGED: copyT(buf, sizeof(buf), STR_W_TL_CHANGED); break;
+    case TL_NO_TAG:  copyT(buf, sizeof(buf), STR_TW_ERR_NO_TAG); break;
+    case TL_NETWORK: copyT(buf, sizeof(buf), STR_LINK_NO_CONNECTION); break;
+    default:         copyT(buf, sizeof(buf), STR_W_TL_FAILED); break;
+  }
+  return String(buf);
+}
+
+// The spool the scale shows, for the card between the two tag cards. All of
+// it is in RAM already: the page asks every three seconds and must not cost
+// the backend a request each time.
+static String spoolJson() {
+  if (!sm_found || sm_id <= 0) return String("{\"found\":false}");
+
+  char url[160];
+  backendSpoolPageUrl(sm_id, url, sizeof(url));
+
+  // Only six plain hex digits reach the style attribute the card puts this
+  // in. A spool with several colours, or anything odd, shows no chip.
+  char col[8] = "";
+  const char *c = sm_color_global[0] == '#' ? sm_color_global + 1 : sm_color_global;
+  bool hex = true;
+  for (int i = 0; i < 6 && hex; i++) hex = isxdigit((unsigned char)c[i]) != 0;
+  if (hex) snprintf(col, sizeof(col), "#%.6s", c);
+
+  // Every tag field that holds something, captioned the way the settings
+  // name it, so the card shows which one binds this spool.
+  String binds = "[";
+  auto add = [&binds](const char *k, const char *v) {
+    if (!v || !v[0]) return;
+    if (binds.length() > 1) binds += ',';
+    binds += String("{\"k\":\"") + jsonEsc(k) + "\",\"v\":\"" + jsonEsc(v) + "\"}";
+  };
+  for (uint8_t i = 0; i < TAG_FIELD_COUNT; i++)
+    add(T(tagFieldSpec(i).str_name), sm_tag_values[i]);
+  add("extra." RFID_TAG_FIELD, sm_hw_uid_value);
+  binds += ']';
+
+  return String("{\"found\":true,\"id\":") + sm_id +
+         ",\"url\":\""        + jsonEsc(url) +
+         "\",\"name\":\""     + jsonEsc(sm_filament_name) +
+         "\",\"vendor\":\""   + jsonEsc(sm_vendor_g) +
+         "\",\"material\":\"" + jsonEsc(sm_material_global) +
+         "\",\"color\":\""    + col +
+         "\",\"remaining\":"  + String(lroundf(sm_remaining)) +
+         ",\"total\":"        + String(lroundf(sm_total)) +
+         ",\"tare\":"         + String(lroundf(sm_spool_weight)) +
+         ",\"location\":\""   + jsonEsc(sm_location_name) +
+         "\",\"article_nr\":\"" + jsonEsc(sm_article_nr) +
+         "\",\"last_used\":\""  + jsonEsc(sm_last_used) +
+         "\",\"last_dried\":\"" + jsonEsc(sm_last_dried) +
+         "\",\"binds\":" + binds + "}";
+}
+
+// Where the scale's second tag question stands, for the page's card.
+static String secondTagJson() {
+  const SecondTagReport r = secondTagReport();
+  return String("{\"st\":") + (int)r.state + ",\"spool\":" + r.spool_id +
+         ",\"left\":" + r.seconds_left + ",\"age\":" + (unsigned long)r.age_ms + "}";
+}
+
 static void routes(WebServer &srv) {
   srv.on("/api/tag/preview", HTTP_GET, [&srv]() {
     if (!webRequire(srv, GATE_MAINT, T(STR_W_NAV_TAGS))) return;
@@ -382,7 +745,7 @@ static void routes(WebServer &srv) {
     uint16_t need = 0;
     bool ok = tagPreview(id, fmtFromInt(fmt),
                          prev, sizeof(prev), linked, sizeof(linked), &ti, &need);
-    char info[320];
+    char info[384];
     tagInfoJson(&ti, info, sizeof(info));
     // jsonEsc on both: prev carries the backend's vendor and filament names,
     // and a quotation mark in a brand made the reply malformed. r.json() then
@@ -411,8 +774,9 @@ static void routes(WebServer &srv) {
       webJobTake();
       return;
     }
-    if (webJobState() == WJS_RUNNING) {
-      // Ours or another job's: the page asks again either way.
+    if (webJobState() == WJS_RUNNING || backendJobState() == BJS_RUNNING) {
+      // Ours, another job's, or the lookup's inventory on the backend
+      // worker: the page asks again either way.
       srv.send(202, "application/json", "{\"pending\":true}");
       return;
     }
@@ -428,15 +792,25 @@ static void routes(WebServer &srv) {
     if (!webRequire(srv, GATE_MAINT, T(STR_W_NAV_TAGS))) return;
     // Reader state comes from the loop task; touching the reader here would
     // race the main NFC poll.
-    char info[320];
+    char info[384];
     tagInfoJson(tagCachedInfo(), info, sizeof(info));
     String j = String("{\"info\":") + info +
                ",\"bytes\":"    + String((unsigned)tagCachedBytes()) +
+               ",\"kindcode\":" + String((int)tagCachedKindCode()) +
                ",\"uid\":\""     + jsonEsc(tagCachedUid()) +
                "\",\"kind\":\""    + jsonEsc(tagKindLocal().c_str()) +
+               "\",\"backend\":\"" + jsonEsc(backendName()) +
                "\",\"state\":\""   + jsonEsc(tagWriteState()) +
                "\",\"message\":\"" + jsonEsc(tagWriteMessageLocal().c_str()) +
-               "\",\"content\":\"" + jsonEsc(tagCachedContent()) + "\"}";
+               "\",\"content\":\"" + jsonEsc(tagCachedContent()) +
+               "\",\"raw\":\""     + jsonEsc(tagCachedRaw()) +
+               "\",\"linkstate\":\"" + tagLinkStateName() +
+               "\",\"linkmsg\":\"" + jsonEsc(tagLinkMessageLocal().c_str()) +
+               "\",\"linkadds\":" + (tagLinkKeepsOtherTags() ? "true" : "false") +
+               ",\"matched\":" + spoolJson() +
+               ",\"t2can\":" + (backendSecondTagKnown() == 1 ? "true" : "false") +
+               ",\"t2\":" + secondTagJson() +
+               ",\"ask\":{\"spool\":" + String(tagWriteAskSpool()) + "}}";
     srv.send(200, "application/json", j);
   });
 
@@ -483,6 +857,40 @@ static void routes(WebServer &srv) {
     srv.send(200, "application/json", "{\"ok\":true}");
   });
 
+  // "id,uid": the spool, and the tag the page was showing when it was asked.
+  // Parked only; tagLinkTick() makes the request on the loop task and refuses
+  // if a different tag lies on the reader by then.
+  srv.on("/api/tag/link", HTTP_POST, [&srv]() {
+    if (!webRequire(srv, GATE_MAINT, T(STR_W_NAV_TAGS))) return;
+    if (!srv.hasArg("plain")) { srv.send(400, "application/json", "{\"error\":\"no body\"}"); return; }
+    String body = srv.arg("plain");
+    const int c = body.indexOf(',');
+    const int id = body.substring(0, c < 0 ? body.length() : c).toInt();
+    String uid = c < 0 ? String("") : body.substring(c + 1);
+    uid.trim();
+    const bool ok = tagLinkRequest(id, uid.c_str());
+    srv.send(200, "application/json", ok ? "{\"ok\":true}" : "{\"ok\":false}");
+  });
+
+  // "start,<spool>" or "cancel". Parked; the scale opens or closes its own
+  // question on the next loop pass, the same one it asks after a link.
+  srv.on("/api/tag/second", HTTP_POST, [&srv]() {
+    if (!webRequire(srv, GATE_MAINT, T(STR_W_NAV_TAGS))) return;
+    const String body = srv.arg("plain");
+    if (body.startsWith("start,")) secondTagWebStart(body.substring(6).toInt());
+    else if (body == "cancel")     secondTagWebCancel();
+    else { srv.send(400, "application/json", "{\"ok\":false}"); return; }
+    srv.send(200, "application/json", "{\"ok\":true}");
+  });
+
+  // "1" or "0": the answer to the write question standing on the scale,
+  // taken exactly as its two buttons take theirs.
+  srv.on("/api/tag/answer", HTTP_POST, [&srv]() {
+    if (!webRequire(srv, GATE_MAINT, T(STR_W_NAV_TAGS))) return;
+    tagWriteAskAnswer(srv.arg("plain") == "1");
+    srv.send(200, "application/json", "{\"ok\":true}");
+  });
+
   srv.on("/api/tag/write", HTTP_POST, [&srv]() {
     if (!webRequire(srv, GATE_MAINT, T(STR_W_NAV_TAGS))) return;
     if (!srv.hasArg("plain")) { srv.send(400, "application/json", "{\"error\":\"no body\"}"); return; }
@@ -493,9 +901,7 @@ static void routes(WebServer &srv) {
     int fmt = c1 < 0 ? 0 : body.substring(c1 + 1, c2 < 0 ? body.length() : c2).toInt();
     bool link = c2 >= 0 && body.substring(c2 + 1).toInt() == 1;
     bool ok = tagWriteRequest(id, fmtFromInt(fmt), link);
-    srv.send(200, "application/json",
-      ok ? "{\"message\":\"Queued, keep the tag on the reader.\"}"
-         : "{\"message\":\"Busy or invalid spool ID.\"}");
+    srv.send(200, "application/json", ok ? "{\"ok\":true}" : "{\"ok\":false}");
   });
 }
 

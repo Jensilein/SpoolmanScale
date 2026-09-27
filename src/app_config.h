@@ -1,6 +1,6 @@
 #pragma once
 
-#define FW_VERSION  "v0.7.3"
+#define FW_VERSION  "v0.8.0"
 #define DONATION_URL "ko-fi.com/formfollowsfunction"
 
 // Backlight PWM duty on GPIO45, 8 bit, straight through to LovyanGFX. Not a
@@ -47,6 +47,19 @@
 
 #define CAL_FACTOR_DEFAULT  1.0f
 #define SCALE_FILTER_SIZE   8
+
+// The app slot size of the partition table this firmware ships with. A device
+// whose slots are smaller was flashed with the old table and is told so once:
+// OTA never rewrites the table, only a flash over USB does.
+#define PARTITION_APP_SLOT_CURRENT_BYTES  0x600000
+// Whether the public web flasher already carries that table. It only does
+// from the first public release after the table changed: a beta tag never
+// updates the flasher. Until then the hint must stay silent, because it would
+// send people to a flasher whose "Update" hands them the previous release with
+// the old table, a downgrade. Set to 1 in the release commit and leave it.
+#define FLASHER_HAS_CURRENT_LAYOUT  1
+// The public web flasher, where the hint sends a device on the old layout.
+#define FLASHER_URL "https://niko11111.github.io/SpoolmanScale/"
 
 // The two chips on I2C_EXT. Named because a bare 0x2A stood in three files and
 // meant nothing to anyone reading a bus scan.
@@ -127,6 +140,18 @@
 // cheap server side lookup - never the full inventory scan, and never
 // /tag/scan, which would broadcast an unknown tag on every attempt.
 #define TAG_RECHECK_MS  4000
+
+// The longest the recheck waits after probes that got no answer. Each such
+// probe doubles the gap up to this: a probe blocks the loop for up to the 5 s
+// connect timeout, and on 21.09.2026 two of them back to back left the loop
+// one pass in 12 s, which read as a frozen scale.
+#define TAG_RECHECK_MAX_MS  60000
+
+// How long a picker that opened by itself - the location list after a spool
+// was lifted, BamBuddy's bay choice - waits for a tap before it closes as if
+// Cancel was pressed. The same 30 s as the second tag question. Its Cancel
+// drains over that time, so the close never comes as a surprise.
+#define PICK_COUNTDOWN_MS  30000
 
 // ============================================================
 //  Hardware self diagnosis

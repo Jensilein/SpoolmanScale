@@ -6,19 +6,26 @@
 #include <lvgl.h>
 #include <cmath>
 #include <cstring>
+#include <esp_heap_caps.h>
 
 #include "app_config.h"
 #include "app/app_boot.h"
 #include "app/app_state.h"
 #include "app/backend_switch.h"
 #include "app/deferred_actions.h"
+#include "app/perf_monitor.h"
+#include "hardware/lvgl_mem.h"
+#include "services/partition_layout.h"
+#include "ui/partition_popup.h"
 #include "bambu/bambu_scan.h"
 #include "bambu/bambu_tag.h"
+#include "snapmaker/snapmaker_scan.h"
 #include "hardware/display_power.h"
 #include "hardware/nfc.h"
 #include "hardware/scale.h"
 #include "hardware/scale_state.h"
 #include "hardware/sd_logger.h"
+#include "hardware/flash_log.h"
 #include "services/nfc_reset.h"
 #include "ui/reboot_popup.h"
 #include "ui/info_popup.h"
@@ -30,6 +37,7 @@
 #include "services/user_options.h"
 #include "web/web_access.h"
 #include "services/tag_write.h"
+#include "services/tag_link.h"
 #include "ui/ota_github.h"
 #include "services/ota_state.h"
 #include "services/update_check.h"
@@ -39,6 +47,10 @@
 #include "services/ams_assign.h"
 #include "services/spoolman_actions.h"
 #include "services/backend_api.h"
+#include "services/server_reach.h"
+#include "services/spool_cache.h"
+#include "services/uid_index.h"
+#include "services/dried_batch.h"
 #include "services/tag_field.h"
 #include "services/bambuddy_device.h"
 #include "services/ams_presence.h"
@@ -71,6 +83,8 @@
 #include "services/prefs_store.h"
 #include "web/web_jobs.h"
 #include "ui/confirm_popup.h"
+#include "ui/ble_devices_screen.h"
+#include "ui/bluetooth_screen.h"
 #include "ui/connection_screen.h"
 #include "ui/dried_action.h"
 #include "ui/drying_reminder_screen.h"
@@ -87,6 +101,7 @@
 #include "ui/more_info_screen.h"
 #include "ui/navigation.h"
 #include "ui/ota_menu.h"
+#include "ui/printer_screen.h"
 #include "ui/scale_menu.h"
 #include "ui/settings_screen.h"
 #include "ui/setup_welcome_screen.h"
@@ -94,8 +109,10 @@
 #include "ui/spoolman_lookup.h"
 #include "ui/spoolman_screen.h"
 #include "ui/wifi_setup_screen.h"
+#include "ui/wifi_menu_screen.h"
 #include "ui/system_screen.h"
 #include "ui/tag_display.h"
+#include "ui/tag_view.h"
 #include "ui/weight_format.h"
 #include "lang.h"
 
@@ -119,10 +136,14 @@ constexpr float LOC_WEIGHT_TOLERANCE_G = 30.0f;
 // spool off does that. Then the popup need not wait for the full debounce.
 constexpr float LOC_WEIGHT_GONE_FRACTION = 0.5f;
 constexpr unsigned long LOC_DEBOUNCE_MS = 2500;
-// The filter averages 8 samples at 200 ms, so after 1200 ms it has taken in
-// six readings of the new weight. That is far more than enough to tell a
-// removed spool from a flickering tag.
-constexpr unsigned long LOC_DEBOUNCE_FAST_MS = 1200;
+// With the drop confirmed the removal itself is settled, so this only covers
+// a spool lifted to be set down again a moment later. It used to be 1200 ms,
+// counted after the NFC grace period of 2.5 s: the question came four seconds
+// after the lift (Nikolai, 27.09.2026: too slow).
+constexpr unsigned long LOC_DEBOUNCE_FAST_MS = 500;
+// Two missed reads in a row, 60 ms apart, plus a halved weight: the spool is
+// off the pad. Without the weight the NFC grace period decides, as before.
+constexpr int NFC_GONE_MIN_MISSES = 2;
 
 // Weight while the tag was last actually readable. Frozen at the first miss,
 // not at the point where the tag counts as removed: by then the spool may
@@ -133,6 +154,15 @@ static bool  loc_weight_valid = false;
 // Set on the first sample of a new tag presence, cleared when the tag is
 // gone. Only used to know when a fresh spool has arrived.
 static unsigned long loc_weight_since_ms = 0;
+
+// The weight left the pad while the tag was unreadable. Proof that the next
+// placement is a real one, which is what lets the location question be asked
+// again for a spool that was already asked about once.
+static bool loc_left_pad = false;
+// The reader lost the tag but the spool stayed: the questions were held back.
+// They stay pending and fire when the weight goes, because the reader, having
+// lost the tag already, will report no removal when the spool is lifted.
+static bool loc_kept = false;
 
 // Did the spool actually leave, or did the reader merely lose the tag?
 //
@@ -197,9 +227,18 @@ static uint8_t scale_recover_tries = 0;
 // pass - which would block lv_timer_handler() for twice the timeout - a miss
 // shortens the next poll interval. Every retry is therefore a separate loop
 // pass and the UI keeps running between them.
+//
+// The slow timeout is what an empty reader costs: the poll waits it out on
+// this task every time, and no touch is read meanwhile. At 150 ms that was 30 %
+// of all time with nothing on the scale. Measured over 926 successful polls
+// with NTAG, Bambu and a plain MIFARE Classic 1k: a tag that is there answers
+// in 26 to 38 ms, never more. Only a tag arriving while the poll was already
+// waiting took longer, and that one is found by the next poll instead. A tag
+// needing longer than the timeout would never be found, since every poll
+// starts the search again, so this stays at twice the slowest answer seen.
 constexpr unsigned long NFC_POLL_SLOW_MS   = 500;
 constexpr unsigned long NFC_POLL_FAST_MS   = 60;
-constexpr uint16_t      NFC_TIMEOUT_SLOW_MS = 150;
+constexpr uint16_t      NFC_TIMEOUT_SLOW_MS = 80;
 constexpr uint16_t      NFC_TIMEOUT_FAST_MS = 100;
 // Raised from 5 to 7 after hardware testing: three of four recovered dropouts
 // needed all five attempts and ran 1.2 to 1.4 s, so the old limit was only
@@ -226,6 +265,15 @@ constexpr unsigned long NFC_STATS_LOG_INTERVAL_MS = 300000;
 // help it, so the retries are spaced out.
 constexpr unsigned long NFC_BAMBU_RETRY_BACKOFF_MS = 1500;
 
+// A 4 byte tag that refuses every sector is either a Bambu tag lying badly or
+// not a Bambu tag at all, and only the retries can tell: over four days one
+// real Bambu spool in fifty needed all six attempts. A plain MIFARE card
+// therefore sat through them all, ten seconds, before its UID was looked up.
+// After this many refused retries the backend is asked, cheaply, whether it
+// knows the UID. A yes ends the probing. A no changes nothing: the retries go
+// on, so no Bambu tag is given up on any earlier than before.
+constexpr int NFC_UID_PROBE_AFTER_RETRIES = 1;
+
 // A tag that has used up its retries must stay given up on. Clearing the retry
 // counter on every removal let a tag that never authenticates restart the
 // count each time and re-scan forever. The counter is only cleared once the
@@ -243,7 +291,6 @@ constexpr unsigned long NFC_RETRY_RESET_ABSENT_MS = 10000;
 // It stays out of the way while any WiFi setup screen is on display.
 static void handleWifiReconnect() {
   if (cfg_wifi_ssid[0] == '\0') return;
-  if (WiFi.status() == WL_CONNECTED) return;
   // The browser is trying a network of its own; a begin() with the stored
   // one would cancel that attempt.
   if (improvSerialBusy()) return;
@@ -255,6 +302,17 @@ static void handleWifiReconnect() {
     (scr_wifi_pass      && !lv_obj_has_flag(scr_wifi_pass,      LV_OBJ_FLAG_HIDDEN)) ||
     (scr_wifi_connecting && !lv_obj_has_flag(scr_wifi_connecting, LV_OBJ_FLAG_HIDDEN));
   if (wifi_ui_visible) return;
+
+  if (WiFi.status() == WL_CONNECTED) {
+    // Connected, but boot gave up before the network answered, so nothing that
+    // a connection starts has run yet. The guards above apply here as well:
+    // each of those flows sets wifi_ok on its own once it succeeds.
+    if (!wifi_ok) {
+      logSD("WiFi: connected after boot, starting network services");
+      wifiOnConnected();
+    }
+    return;
+  }
 
   static unsigned long last_retry_ms = 0;
   if (last_retry_ms != 0 && millis() - last_retry_ms < WIFI_RETRY_INTERVAL_MS) return;
@@ -286,9 +344,14 @@ void appLoop() {
   // Settings changed by a button are parked while LVGL dispatches and written
   // the moment it is done, so no flash write runs inside an event callback.
   prefsDeferWrites(true);
+  perfLoopMark();
+  perfSection("ui");
   lv_timer_handler();
+  perfUiDone();
+  perfSection("prefs");
   prefsDeferWrites(false);
   prefsFlush();
+  perfSection("power");
   handlePowerManagement();
 
   // ── Stack watermark of the loop task ─────────────────────
@@ -332,22 +395,26 @@ void appLoop() {
   static uint32_t heartbeat_count = 0;
   static bool     hb_have_prev    = false;
   static uint32_t hb_prev_heap    = 0;
-  static uint32_t hb_prev_lv_free = 0;
+  static uint32_t hb_prev_lv_int  = 0;
+  static uint32_t hb_prev_lv_ps   = 0;
   static uint32_t hb_prev_stack   = 0;
-  static uint8_t  hb_prev_frag    = 0;
+  static uint32_t hb_prev_ps_allocs = 0;
   static bool     hb_prev_wifi    = false;
   if (sd_verbose && millis() - last_heartbeat_ms >= 5000) {
     last_heartbeat_ms = millis();
     heartbeat_count++;
-    // LVGL runs on its own pool (LV_MEM_SIZE), separate from the ESP heap.
-    // Exhausting it triggers LV_ASSERT_MALLOC, which halts in while(1) with
-    // no reboot and no panic output. Log it so screen leaks become visible.
-    lv_mem_monitor_t lv_mem;
-    lv_mem_monitor(&lv_mem);
+    // LVGL takes its memory from the heap, internal RAM under a budget and
+    // PSRAM past it (hardware/lvgl_mem.h). A screen leak shows as lv_int
+    // climbing, a crowded heap as lv_psallocs rising.
+    const LvMemStats lv_mem = lvMemStats();
+    // Free blocks of the internal heap: how many pieces the free memory lies
+    // in. With LVGL's blocks now in the same heap, this number and heap_big
+    // are what shows fragmentation. One walk of the heap every 5 s.
+    multi_heap_info_t heap_info;
+    heap_caps_get_info(&heap_info, MALLOC_CAP_INTERNAL);
     bool wifi_up = (WiFi.status() == WL_CONNECTED);
 
     const uint32_t heap    = (uint32_t)ESP.getFreeHeap();
-    const uint32_t lv_free = (uint32_t)lv_mem.free_size;
     const uint32_t stack   = (uint32_t)stack_min_bytes;
 
     // Small drifts are normal and not worth a line. A kilobyte is well below
@@ -357,9 +424,10 @@ void appLoop() {
     };
     const bool changed = !hb_have_prev
                       || moved(heap, hb_prev_heap)
-                      || moved(lv_free, hb_prev_lv_free)
+                      || moved(lv_mem.int_used, hb_prev_lv_int)
+                      || moved(lv_mem.ps_used, hb_prev_lv_ps)
                       || stack < hb_prev_stack          // only ever falls
-                      || lv_mem.frag_pct != hb_prev_frag
+                      || lv_mem.ps_allocs != hb_prev_ps_allocs
                       || wifi_up != hb_prev_wifi;
     // A line every so often even when nothing moves, so that the last
     // timestamp still says how far the loop got before it stopped - which is
@@ -370,39 +438,68 @@ void appLoop() {
       last_hb_logged_ms = millis();
       hb_have_prev    = true;
       hb_prev_heap    = heap;
-      hb_prev_lv_free = lv_free;
+      hb_prev_lv_int  = lv_mem.int_used;
+      hb_prev_lv_ps   = lv_mem.ps_used;
       hb_prev_stack   = stack;
-      hb_prev_frag    = lv_mem.frag_pct;
+      hb_prev_ps_allocs = lv_mem.ps_allocs;
       hb_prev_wifi    = wifi_up;
       logSDf("[verbose] heartbeat #%u heap=%d PSRAM=%d uptime=%lus "
-             "lv_free=%u lv_biggest=%u lv_used=%u%% lv_frag=%u%% "
-             "stack_min=%u wifi=%s rssi=%d",
+             "heap_big=%u heap_holes=%u lv_int=%u lv_peak=%u lv_used=%u%% lv_ps=%u "
+             "lv_psallocs=%u stack_min=%u wifi=%s rssi=%d",
         heartbeat_count, ESP.getFreeHeap(), ESP.getFreePsram(), millis() / 1000,
-        (unsigned)lv_mem.free_size, (unsigned)lv_mem.free_biggest_size,
-        (unsigned)lv_mem.used_pct, (unsigned)lv_mem.frag_pct,
+        (unsigned)heap_info.largest_free_block, (unsigned)heap_info.free_blocks,
+        (unsigned)lv_mem.int_used, (unsigned)lv_mem.int_peak,
+        (unsigned)lv_mem.used_pct, (unsigned)lv_mem.ps_used,
+        (unsigned)lv_mem.ps_allocs,
         (unsigned)stack_min_bytes,
         wifi_up ? "up" : "DOWN", wifi_up ? WiFi.RSSI() : 0);
+      perfLogWindow();
     }
   }
 
   // Before the watchdog, so a connect attempt from the browser is already
   // known to be running when the watchdog asks.
+  perfSection("improv");
   improvSerialTick();
   // DNS answers for the setup portal, and the hand-off of what its form sent.
+  perfSection("portal");
   setupPortalTick();
+  perfSection("wifi");
   handleWifiReconnect();
 
   // OTA web server bedienen wenn aktiv
+  perfSection("web");
   handleOtaServerClient();
+  perfSection("tagwrite");
   tagWriteTick();
+  tagLinkTick();
   // Says a freshly linked tag once more, so a paired browser opens the spool
   // instead of being left with the unknown-tag toast the first scan produced.
+  perfSection("rescan");
   spoolmanRescanTick();
   // Asks again while an unknown tag sits on the pad, so linking it in a
   // browser shows up here without lifting the spool off and back on.
+  perfSection("recheck");
   spoolmanRecheckTick();
+  // Collects the inventory an unknown tag's lookup handed to the backend
+  // worker, and reads the verdict out of it.
+  perfSection("lookup");
+  lookupScanTick();
+  perfSection("sdlog");
   sdLoggerTick();
+  // Keeps a sector erased ahead of the ring in flash, so a log line never
+  // waits for one, and carries out a clear a sector at a time.
+  perfSection("flashlog");
+  flashLogTick();
+  perfSection("jobs");
   webJobsTick();
+  // Gives the kept spool list back once it is too old or was called off. Two
+  // comparisons while there is none.
+  spoolCacheTick();
+  // The same for the identifiers the last full scan saw, which live two
+  // minutes, and for an index a lookup opened and left unfinished.
+  // Not while a scan still has to add its archive pass to an index it opened.
+  if (!lookupScanBusy()) uidIndexTick();
   // And once the spool is known, whether the tag still says the same thing it
   // does. Costs a request only while the switch for it is on.
   tagMismatchTick();
@@ -412,6 +509,7 @@ void appLoop() {
 
   // Background update check. Cheap: a few comparisons per pass, and the actual
   // request happens in its own task on the other core.
+  perfSection("updchk");
   updateCheckTick();
 
   firmwareStampTick();
@@ -431,8 +529,10 @@ void appLoop() {
   // A manual check that ran into the background task. Retried as soon as the
   // TLS connection is free again, dropped after GH_CHECK_WAIT_MS so a task that
   // never returns cannot leave the screen waiting on it.
+  // The web worker holds a TLS connection of its own at times; two handshakes
+  // at once want more internal heap than there is.
   if (gh_check_pending) {
-    if (!updateCheckBusy()) {
+    if (!updateCheckBusy() && webJobState() != WJS_RUNNING) {
       gh_check_pending = false;
       doGithubOtaCheck();
     } else if (millis() - gh_check_wait_since > GH_CHECK_WAIT_MS) {
@@ -442,12 +542,16 @@ void appLoop() {
   }
 
   // Extra fields check/create - deferred from LVGL event callback to loop
+  perfSection("deferred");
   handleExtraFieldsDeferredActions();
   handleSpoolmanScreenDeferredActions();
   // Before the WiFi setup actions: a form the portal handed over becomes their
   // connect in the same pass.
   handleWifiPortalDeferredActions();
   handleWifiSetupDeferredActions();
+  handleBluetoothDeferredActions();
+  handleBleDevicesDeferredActions();
+  handlePrinterDeferredActions();
   handleConfirmPopupDeferredActions();
   handleDriedDeferredAction();
   // Bringing an archived spool back. Out here rather than in the button's
@@ -509,7 +613,8 @@ void appLoop() {
     // not come back as present, or the header lights up again.
     if (g_scale_fitted) scl_ok = scaleHardwarePresent();
     diagnosticsRecheckNow();
-    diagnosticsTick();
+    perfSection("diag");
+  diagnosticsTick();
     updateDiagBanner();
     updateHeaderStatus();
   }
@@ -686,13 +791,47 @@ void appLoop() {
     hideAllOverlays();
     lv_obj_clear_flag(scr_connection, LV_OBJ_FLAG_HIDDEN);
   }
+  if (show_wifi_menu_pending) {
+    show_wifi_menu_pending = false;
+    buildWifiMenuScreen();         // releases the previous instance itself
+    hideAllOverlays();
+    lv_obj_clear_flag(scr_wifi_menu, LV_OBJ_FLAG_HIDDEN);
+  }
+  if (show_bluetooth_pending) {
+    show_bluetooth_pending = false;
+    buildBluetoothScreen();        // releases the previous instance itself
+    hideAllOverlays();
+    lv_obj_clear_flag(scr_bluetooth, LV_OBJ_FLAG_HIDDEN);
+  }
+  if (show_ble_devices_pending) {
+    show_ble_devices_pending = false;
+    buildBleDevicesScreen();       // releases the previous instance itself
+    hideAllOverlays();
+    lv_obj_clear_flag(scr_ble_devices, LV_OBJ_FLAG_HIDDEN);
+    // A list that was never filled scans on the way in; the button in the
+    // header is for scanning again.
+    if (!bleDevicesScanned()) ble_scan_pending = true;
+  }
+  if (show_printer_pending) {
+    show_printer_pending = false;
+    buildPrinterScreen();          // releases the previous instance itself
+    hideAllOverlays();
+    lv_obj_clear_flag(scr_printer, LV_OBJ_FLAG_HIDDEN);
+  }
   // Shown once the device has settled, not during boot: a modal that appears
   // while the first screen is still assembling reads as a fault.
   static bool hint_checked = false;
+  static bool nfc_hint_this_boot = false;
   if (!hint_checked && millis() > 12000) {
     hint_checked = true;
-    if (nfcResetHintDue()) showNfcResetHint();
+    if (nfcResetHintDue()) { showNfcResetHint(); nfc_hint_this_boot = true; }
   }
+  // The storage note waits for a boot on which the reader has nothing to say,
+  // except when an update was found that no longer fits: then it comes at
+  // once, over whatever screen asked.
+  if (hint_checked && partitionHintDue() &&
+      (!nfc_hint_this_boot || partitionTooBigVersion()[0]))
+    showPartitionHint();
 
   if (nfc_reset_probe_pending) {
     nfc_reset_probe_pending = false;
@@ -720,17 +859,32 @@ void appLoop() {
   // Before the two screens that use it: it releases its overlay in one pass
   // and hands the answer over in the next, and the handler that acts on that
   // answer should see it in the same pass rather than the one after.
+  perfSection("deferred2");
   handleStatusPickerDeferredActions();
   handleMoreInfoDeferredActions();
   handleAmsAssignDeferredActions();
   handleAmsViewDeferredActions();
   handleAmsDetailDeferredActions();
+  handleTagViewDeferredActions();
+  // A request found no server, see server_reach.h. After every handler above,
+  // so the popup comes up over whatever the failed action left on screen, and
+  // the header badge turns red now instead of on the next health check. An
+  // info popup already showing keeps the request waiting for the next pass.
+  if (!isInfoPopupOpen() && serverReachPopupTake()) {
+    updateHeaderStatus();
+    showInfoPopup(STR_SERVER_DOWN_TITLE, STR_SERVER_DOWN_TEXT, INFO_WARN);
+  }
+  // Right after the card's own handler, so a batch that finished inline (as
+  // it does in the simulator) is collected in the pass that started it.
+  perfSection("ams");
+  amsDetailBatchTick();
   amsPickTick();
   amsPresenceTick();
   // Watches the reader for the tag on the other flange while its question
   // stands. It has to run every pass, not only when something happened: the
   // countdown is what it is mostly doing.
   handleSecondTagDeferredActions();
+  if (!tag_present && weightSaysSpoolGone()) loc_left_pad = true;
   // Debounced popups after a removal, cross-checked against the scale.
   // The AMS question and the location question hang off the same event, so
   // the verdict is worked out once and the AMS side gets it first: a spool
@@ -743,10 +897,22 @@ void appLoop() {
     const bool weight_says_stay = weightSaysSpoolStayed();
 
     // A clear drop needs no further waiting, the spool is demonstrably off.
-    const bool due = (since >= LOC_DEBOUNCE_MS) ||
-                     (weight_says_gone && since >= LOC_DEBOUNCE_FAST_MS);
+    const bool due = loc_kept
+      ? weight_says_gone   // held back: only the weight leaving ends it
+      : (since >= LOC_DEBOUNCE_MS) || (weight_says_gone && since >= LOC_DEBOUNCE_FAST_MS);
 
-    if (due) {
+    if (due && weight_says_stay) {
+      // The reader lost the tag but the spool never moved. Typical for
+      // NTAGs. Not a removal, so no popup yet - but the questions stay
+      // pending rather than being dropped: this was the only removal event
+      // the reader will report, and the real lift later must still ask.
+      if (!loc_kept) {
+        loc_kept = true;
+        logSDf("LOC: popup held back, weight unchanged (%.0fg vs %.0fg), spool still on the scale",
+               scale_weight_g, loc_weight_ref);
+      }
+    } else if (due) {
+      loc_kept = false;
       int pending_id = loc_popup_pending_id;
       int ams_id     = ams_popup_pending_id;
       int pick_id    = pick_popup_pending_id;
@@ -754,14 +920,7 @@ void appLoop() {
       ams_popup_pending_id  = -1;
       pick_popup_pending_id = -1;
 
-      if (weight_says_stay) {
-        // The reader lost the tag but the spool never moved. Typical for
-        // NTAGs. Not a removal, so no popup and no note that it was already
-        // shown: the real removal later still deserves one. A parked
-        // measurement stays parked for exactly the same reason.
-        logSDf("LOC: popup suppressed, weight unchanged (%.0fg vs %.0fg), spool still on the scale",
-               scale_weight_g, loc_weight_ref);
-      } else if (pick_id > 0 && amsPickHasPending() &&
+      if (pick_id > 0 && amsPickHasPending() &&
                  amsPickPendingSpoolId() == pick_id) {
         logSDf("AMSPICK: asking after %lums id=%d (weight %.0fg -> %.0fg%s)",
                since, pick_id, loc_weight_ref, scale_weight_g,
@@ -786,7 +945,9 @@ void appLoop() {
     }
   }
   // Cancel pending popups if tag came back
+  perfSection("tagstate");
   if (tag_present) {
+    loc_kept = false;
     if (loc_popup_pending_id > 0) {
       logSDf("[verbose] LOC: debounce cancelled - tag back id=%d", loc_popup_pending_id);
       loc_popup_pending_id = -1;
@@ -866,10 +1027,16 @@ void appLoop() {
   // A write from the web page just bound the tag on the reader to a spool.
   // Showing it is the confirmation that matters - the browser reports the
   // write, but the scale kept displaying whatever was there before.
-  if (const int linked_id = tagWriteTakeLinkedSpool()) {
+  // A link from the tag page that wrote nothing ends the same way.
+  int linked_id = tagWriteTakeLinkedSpool();
+  if (!linked_id) linked_id = tagLinkTakeLinkedSpool();
+  if (linked_id) {
     if (!isSpoolFlowIdInputOpen() && !isSpoolFlowLinkEntryOpen() &&
         !isConfirmPopupOpen()) {
       logSDf("TagWrite: showing spool %d after the link", linked_id);
+      // Asked here, on the loop, so the tag page can read the answer from a
+      // web handler without reaching the server: see backendSecondTagKnown().
+      backendCanHoldSecondTag();
       tagLookupForget();
       querySpoolmanById(linked_id);
       spoolFlowAskSecondTag(linked_id);
@@ -932,13 +1099,10 @@ void appLoop() {
     // chip uid.
     if (!isSpoolFlowIdInputOpen() && !isSecondTagPopupOpen() &&
         strlen(g_tag.tray_uuid) == 32 && strcmp(g_tag.uid_str, spoolman_queried_uid) != 0) {
-      querySpoolman(g_tag.tray_uuid);
+      querySpoolman(g_tag.tray_uuid, LOOKUP_FROM_BAMBU);
       strncpy(spoolman_queried_uid, g_tag.uid_str, sizeof(spoolman_queried_uid)-1);
       spoolman_queried_uid[sizeof(spoolman_queried_uid)-1] = '\0';
-      if (!sm_found && wifi_ok) {
-        link_tag_first_seen_ms = millis();
-        link_popup_dismissed = false;
-      }
+      if (!lookupPending()) lookupFollowUp(LOOKUP_FROM_BAMBU, g_tag.tray_uuid);
     }
   }
 
@@ -957,6 +1121,7 @@ void appLoop() {
   // register read is all ones through Adafruit_BusIO, which available() reads
   // as "conversion ready" and read() as a sample of -1. Tare or calibrate on
   // that and the nonsense is stored for good.
+  perfSection("scale");
   if (scale_ready && millis() - last_scale_ms >= 200 && !scaleHardwarePresent()) {
     last_scale_ms = millis();
     scale_ready = false;
@@ -1278,6 +1443,7 @@ void appLoop() {
   }
 
   // Fix 10: Spoolman health check every 30s
+  perfSection("netsvc");
   if (wifi_ok) {
     static unsigned long last_sm_check_ms = 0;
     if (millis() - last_sm_check_ms >= 30000 && !isSpoolFlowIdInputOpen()) {
@@ -1286,11 +1452,14 @@ void appLoop() {
       bool was_reachable = sm_reachable;
       sm_reachable = (code == 200);
       if (sm_reachable != was_reachable) updateHeaderStatus();
+      if (sm_reachable && !was_reachable) serverReachRestored();
       // Someone can switch BamBuddy's filament manager while the scale is
       // running. That does not fail on our side, it just starts addressing
       // the other database - so the mode is re-asked here rather than only
       // at boot.
-      if (sm_reachable) backendRefreshMode();
+      // Not while a drying batch writes on the other core: its requests read
+      // the inventory mode, and a refresh in their middle is a second writer.
+      if (sm_reachable && !driedBatchBusy()) backendRefreshMode();
     }
   }
 
@@ -1324,6 +1493,7 @@ void appLoop() {
   // BamBuddy presence: registration, heartbeat, queued commands, live weight
   // and tag removal. Paces itself, so it is called unconditionally and costs
   // a mode check on the passes where it has nothing to do.
+  perfSection("bambuddy");
   bambuddyDeviceTick();
 
   // The one owner of port 80. Derived from the conditions once a second, so
@@ -1447,6 +1617,8 @@ void appLoop() {
     };
 
     static unsigned long last_nfc_check_ms = 0;
+    static bool bambu_uid_probed = false;   // see NFC_UID_PROBE_AFTER_RETRIES
+    static bool snapmaker_decoded = false;  // this placement read as a Snapmaker tag
     static unsigned long last_nfc_stats_ms = 0;
     static uint8_t last_uid_len = 0;   // 4 = Bambu, 7 = NTAG, for the removal delay
 
@@ -1456,11 +1628,14 @@ void appLoop() {
     const unsigned long poll_interval = fast_mode ? NFC_POLL_FAST_MS : NFC_POLL_SLOW_MS;
     const uint16_t poll_timeout = fast_mode ? NFC_TIMEOUT_FAST_MS : NFC_TIMEOUT_SLOW_MS;
 
+    perfSection("nfc");
     if (millis() - last_nfc_check_ms >= poll_interval) {
       last_nfc_check_ms = millis();
       uint8_t uid[NFC_UID_MAX], uidLen = 0;
       crumbSet("nfc poll");
+      const unsigned long poll_start_ms = millis();
       bool found = nfcReadPassiveTarget(uid, &uidLen, poll_timeout);
+      perfNfcPoll(found, (uint32_t)(millis() - poll_start_ms));
 
       nfc_stat_scans++;
       if (found) {
@@ -1469,7 +1644,10 @@ void appLoop() {
         // this a tag that keeps failing to authenticate would be re-scanned
         // indefinitely, five seconds per attempt.
         if (tag_absent_since_ms != 0) {
-          if (millis() - tag_absent_since_ms > NFC_RETRY_RESET_ABSENT_MS) nfc_retry_count = 0;
+          if (millis() - tag_absent_since_ms > NFC_RETRY_RESET_ABSENT_MS) {
+            nfc_retry_count = 0;
+            bambu_uid_probed = false;
+          }
           tag_absent_since_ms = 0;
         }
         if (nfc_fast_polls > 0) {
@@ -1495,13 +1673,8 @@ void appLoop() {
       if (found && uidLen == 4) {
         // ── MIFARE Classic (Bambu) ────────────────────────────
         last_tag_seen_ms = millis();
+        const bool newly_placed = !tag_present;
         tag_present = true;
-        {
-          char u[16];
-          snprintf(u, sizeof(u), "%02X:%02X:%02X:%02X",
-                   uid[0], uid[1], uid[2], uid[3]);
-          TagSeen::note(u, "Bambu");
-        }
         // A successful read means zero consecutive misses, by definition.
         // This used to be reset only when the UID changed, so after the very
         // first read of a spool the counter never went back to zero. The
@@ -1509,7 +1682,14 @@ void appLoop() {
         // apart, and the fifth glitch of a session declared the spool removed
         // while it was still lying on the scale.
         nfc_absent_count = 0;
-        resetActivityTimer();
+        // Putting a tag down wakes the screen, a tag lying there does not: see
+        // handlePowerManagement(). One that merely dropped out and came back
+        // under a spool that never moved is not news either.
+        if (newly_placed && !weightSaysSpoolStayed()) resetActivityTimer();
+        // Back after it demonstrably left the pad: whatever was answered
+        // for it last time was about that trip, this is a new one.
+        if (newly_placed && loc_left_pad) g_loc_popup_shown_for_id = -1;
+        if (newly_placed) loc_left_pad = false;
 
         char uid_str[24];
         snprintf(uid_str, sizeof(uid_str), "%02X:%02X:%02X:%02X",
@@ -1521,14 +1701,50 @@ void appLoop() {
         bool contents_incomplete = (bambu_blocks_read < 48);
 
         if (uid_changed) {
-          Serial.printf("NFC: New Bambu UID %s\n", uid_str);
+          Serial.printf("NFC: New 4-byte UID %s\n", uid_str);
+          resetActivityTimer();   // a different tag is always news
+          // The NTAG marker belongs to the NTAG that was read last, and a
+          // different tag has been read since. Left standing, the same NTAG
+          // put back without a removal in between counted as handled and was
+          // never looked up: on 22.09.2026 an NTAG after two Bambu tags kept
+          // the Bambu spool on screen, "Update weight" included.
+          ntag_handled_uid[0] = '\0';
           nfc_retry_count = 0; nfc_absent_count = 0;
           last_bambu_retry_ms = 0;
+          bambu_uid_probed = false;
+          snapmaker_decoded = false;
           lv_label_set_text(lbl_nfc_dot, LV_SYMBOL_BULLET);
           lv_obj_set_style_text_color(lbl_nfc_dot, lv_color_hex(0x28d49a), 0);
           lv_label_set_text(lbl_status, T(STR_READING_TAG));
           lv_obj_set_style_text_color(lbl_status, lv_color_hex(0x28d49a), 0);
           scanTag(uid, uidLen);
+          // Opt-in, off by default, and then none of this touches the reader.
+          // Once per placement, right after the first Bambu probe came back
+          // with nothing. A tag that answers to Snapmaker's keys is no Bambu
+          // tag, so the Bambu retries are skipped and the branch below for a
+          // plain 4 byte card looks the spool up by its UID.
+          if (g_snapmaker_tags && countBambuDataBlocksRead(g_tag) == 0 &&
+              scanSnapmakerTag(uid, uidLen) != SNAPMAKER_SCAN_NO_AUTH) {
+            snapmaker_decoded = true;
+            nfc_retry_count = NFC_MAX_RETRIES;
+            last_nfc_check_ms = 0;
+          }
+        } else if (bambu_blocks_read == 0 && !bambu_uid_probed &&
+                   nfc_retry_count >= NFC_UID_PROBE_AFTER_RETRIES &&
+                   nfc_retry_count < NFC_MAX_RETRIES &&
+                   wifi_ok && !isSpoolFlowIdInputOpen() && !isSecondTagPopupOpen()) {
+          // Once per placement, see NFC_UID_PROBE_AFTER_RETRIES.
+          bambu_uid_probed = true;
+          crumbSet("uid probe");
+          if (spoolmanTagResolves(uid_str)) {
+            logSDf("NFC: %s refused %d probes, but the backend knows the UID - not a Bambu tag to wait for",
+                   uid_str, nfc_retry_count + 1);
+            // The branch below for a tag that has used up its retries does the
+            // real lookup and all the bookkeeping. Poll again at once rather
+            // than half a second from now.
+            nfc_retry_count = NFC_MAX_RETRIES;
+            last_nfc_check_ms = 0;
+          }
         } else if ((uuid_missing || contents_incomplete) && nfc_retry_count < NFC_MAX_RETRIES &&
                    millis() - last_bambu_retry_ms >= NFC_BAMBU_RETRY_BACKOFF_MS) {
           last_bambu_retry_ms = millis();
@@ -1544,6 +1760,14 @@ void appLoop() {
           lv_obj_set_style_text_color(lbl_status, lv_color_hex(0x28d49a), 0);
           scanTag(uid, uidLen);
         } else {
+          // The "Tag placed" line waits until the scan has settled, so it
+          // says what the scale concluded: Bambu once any sector has read,
+          // MIFARE once the retries are spent with nothing. In between,
+          // while the retries run, nothing is logged yet.
+          if (bambu_blocks_read > 0 || nfc_retry_count >= NFC_MAX_RETRIES) {
+            TagSeen::note(uid_str, bambu_blocks_read > 0 ? "Bambu"
+                                   : snapmaker_decoded   ? "Snapmaker" : "MIFARE");
+          }
           if ((uuid_missing || contents_incomplete) && nfc_retry_count >= NFC_MAX_RETRIES &&
               bambu_blocks_read == 0) {
             // Not a Bambu tag at all. Every sector failed authentication, so
@@ -1561,33 +1785,14 @@ void appLoop() {
             // honest answer rather than "not in Spoolman".
             if (wifi_ok && !isSpoolFlowIdInputOpen() && !isSecondTagPopupOpen() &&
                 strcmp(uid_str, spoolman_queried_uid) != 0) {
-              querySpoolman(uid_str);
+              querySpoolman(uid_str, LOOKUP_FROM_UID);
               strncpy(spoolman_queried_uid, uid_str, sizeof(spoolman_queried_uid)-1);
               spoolman_queried_uid[sizeof(spoolman_queried_uid)-1] = '\0';
-              if (!sm_found) {
-                strncpy(link_tag_uid, uid_str, sizeof(link_tag_uid)-1);
-                link_tag_uid[sizeof(link_tag_uid)-1] = '\0';
-                link_tag_first_seen_ms = millis();
-                link_popup_dismissed = false;
-              } else {
-                // Stays shorter than 32 characters, so everything that tells a
-                // Bambu tag apart by that length keeps saying no.
-                strncpy(g_tag.tray_uuid, uid_str, sizeof(g_tag.tray_uuid)-1);
-                g_tag.tray_uuid[sizeof(g_tag.tray_uuid)-1] = '\0';
-                updateLinkButton();
-              }
+              if (!lookupPending()) lookupFollowUp(LOOKUP_FROM_UID, uid_str);
             }
             lv_label_set_text(lbl_nfc_dot, LV_SYMBOL_BULLET);
             lv_obj_set_style_text_color(lbl_nfc_dot, lv_color_hex(0x28d49a), 0);
-            // Archived is its own answer: saying "tag detected" in green while the
-            // line below reads "Archived" tells the user two different things.
-            { char sb[48]; backendText(sm_archived ? T(STR_ARCHIVED)
-                                       : sm_found ? T(sm_dup_count > 1 ? STR_TAG_FOUND_DUP : STR_TAG_FOUND)
-                                                  : T(STR_NOT_IN_SPOOLMAN), sb, sizeof(sb));
-              lv_label_set_text(lbl_status, sb); }
-            lv_obj_set_style_text_color(lbl_status,
-              sm_archived ? lv_color_hex(0x808080)
-                          : sm_found ? lv_color_hex(0x28d49a) : lv_color_hex(0xf0b838), 0);
+            paintTagStatus();
           } else if ((uuid_missing || contents_incomplete) && nfc_retry_count >= NFC_MAX_RETRIES) {
             lv_label_set_text(lbl_nfc_dot, LV_SYMBOL_BULLET);
             lv_obj_set_style_text_color(lbl_nfc_dot, lv_color_hex(0xf0b838), 0);
@@ -1598,13 +1803,10 @@ void appLoop() {
             if (!isSpoolFlowIdInputOpen() && !isSecondTagPopupOpen() &&
                 strcmp(g_tag.uid_str, spoolman_queried_uid) != 0 && strlen(g_tag.tray_uuid) == 32) {
               crumbSet("backend lookup");
-              querySpoolman(g_tag.tray_uuid);
+              querySpoolman(g_tag.tray_uuid, LOOKUP_FROM_BAMBU);
               strncpy(spoolman_queried_uid, g_tag.uid_str, sizeof(spoolman_queried_uid)-1);
               spoolman_queried_uid[sizeof(spoolman_queried_uid)-1] = '\0';
-              if (!sm_found && wifi_ok) {
-                link_tag_first_seen_ms = millis();  // Start timer
-                link_popup_dismissed = false;
-              }
+              if (!lookupPending()) lookupFollowUp(LOOKUP_FROM_BAMBU, g_tag.tray_uuid);
             } else if (!sm_found && !link_popup_dismissed && !isSpoolFlowLinkEntryOpen() &&
                        wifi_ok && strlen(g_tag.tray_uuid) == 32) {
               // Auto-popup disabled - user uses the Link/Copy buttons in Zone 5
@@ -1612,22 +1814,21 @@ void appLoop() {
             }
             lv_label_set_text(lbl_nfc_dot, LV_SYMBOL_BULLET);
             lv_obj_set_style_text_color(lbl_nfc_dot, lv_color_hex(0x28d49a), 0);
-            { char sb[48]; backendText(sm_archived ? T(STR_ARCHIVED)
-                                       : sm_found ? T(sm_dup_count > 1 ? STR_TAG_FOUND_DUP : STR_TAG_FOUND)
-                                                  : T(STR_NOT_IN_SPOOLMAN), sb, sizeof(sb));
-              lv_label_set_text(lbl_status, sb); }
-            lv_obj_set_style_text_color(lbl_status,
-              sm_archived ? lv_color_hex(0x808080)
-                          : sm_found ? lv_color_hex(0x28d49a) : lv_color_hex(0xf0b838), 0);
+            paintTagStatus();
           }
         }
 
       } else if (found && uidLen == 7) {
         // ── NTAG detected ──────────────────────────────────────
         last_tag_seen_ms = millis();
+        const bool newly_placed = !tag_present;
         tag_present = true;
         nfc_absent_count = 0;   // see the comment in the Bambu branch above
-        resetActivityTimer();
+        if (newly_placed && !weightSaysSpoolStayed()) resetActivityTimer();
+        // Back after it demonstrably left the pad: whatever was answered
+        // for it last time was about that trip, this is a new one.
+        if (newly_placed && loc_left_pad) g_loc_popup_shown_for_id = -1;
+        if (newly_placed) loc_left_pad = false;
 
         char uid_str[24];
         snprintf(uid_str, sizeof(uid_str), "%02X:%02X:%02X:%02X:%02X:%02X:%02X",
@@ -1653,7 +1854,10 @@ void appLoop() {
         // actually runs. With no WiFi, or with the manual id input open, it
         // stays empty and every poll would look like a new tag.
         bool uid_changed_ntag = (strcmp(uid_str, ntag_handled_uid) != 0);
-        if (uid_changed_ntag) logSDf("NFC: NTAG UID=%s", uid_str);
+        if (uid_changed_ntag) {
+          logSDf("NFC: NTAG UID=%s", uid_str);
+          resetActivityTimer();   // a different tag is always news
+        }
 
         lv_label_set_text(lbl_nfc_dot, LV_SYMBOL_BULLET);
         lv_obj_set_style_text_color(lbl_nfc_dot, lv_color_hex(0x28d49a), 0);
@@ -1668,6 +1872,7 @@ void appLoop() {
           g_tag.uid_str[sizeof(g_tag.uid_str)-1] = '\0';
           g_tag.tray_uuid[0] = '\0';
           g_tag.material[0] = '\0';
+          g_tag.color = SpoolColor{};
           g_tag.color_hex[0] = '\0';
           g_tag.vendor[0] = '\0';
           spoolman_queried_uid[0] = '\0';
@@ -1698,23 +1903,12 @@ void appLoop() {
           lv_timer_handler();
 
           if (wifi_ok && !isSpoolFlowIdInputOpen() && !isSecondTagPopupOpen()) {
-            querySpoolman(uid_str);
+            querySpoolman(uid_str, LOOKUP_FROM_NTAG);
             strncpy(spoolman_queried_uid, uid_str, sizeof(spoolman_queried_uid)-1);
             spoolman_queried_uid[sizeof(spoolman_queried_uid)-1] = '\0';
-
-            if (!sm_found) {
-              Serial.println("NTAG: not in Spoolman -> waiting for delay");
-              strncpy(link_tag_uid, uid_str, sizeof(link_tag_uid)-1);
-              link_tag_uid[sizeof(link_tag_uid)-1] = '\0';
-              link_tag_first_seen_ms = millis();
-              link_popup_dismissed = false;
-            } else {
-              lv_label_set_text(lbl_status, T(STR_TAG_FOUND));
-              lv_obj_set_style_text_color(lbl_status, lv_color_hex(0x28d49a), 0);
-              strncpy(g_tag.tray_uuid, uid_str, sizeof(g_tag.tray_uuid)-1);
-              g_tag.tray_uuid[sizeof(g_tag.tray_uuid)-1] = '\0';
-              updateLinkButton();
-            }
+            // A verdict that waits for the inventory is followed up by
+            // lookupScanTick() once it is in.
+            if (!lookupPending()) lookupFollowUp(LOOKUP_FROM_NTAG, uid_str);
           } else {
             lv_label_set_text(lbl_status, T(STR_TAG_FOUND));
             lv_obj_set_style_text_color(lbl_status, lv_color_hex(0x28d49a), 0);
@@ -1723,13 +1917,7 @@ void appLoop() {
           // Same UID - show popup after delay if not dismissed
           // Auto-popup disabled - user uses the Link/Copy buttons in Zone 5
           (void)link_tag_first_seen_ms;
-          { char sb[48]; backendText(sm_archived ? T(STR_ARCHIVED)
-                                     : sm_found ? T(sm_dup_count > 1 ? STR_TAG_FOUND_DUP : STR_TAG_FOUND)
-                                                : T(STR_NOT_IN_SPOOLMAN), sb, sizeof(sb));
-            lv_label_set_text(lbl_status, sb); }
-          lv_obj_set_style_text_color(lbl_status,
-            sm_archived ? lv_color_hex(0x808080)
-                        : sm_found ? lv_color_hex(0x28d49a) : lv_color_hex(0xf0b838), 0);
+          paintTagStatus();
         }
 
       } else {
@@ -1756,12 +1944,20 @@ void appLoop() {
           // forever on a tag that would not authenticate.
           const unsigned long absent_limit =
             (last_uid_len == 7) ? NFC_ABSENT_NTAG_MS : NFC_ABSENT_BAMBU_MS;
-          if (!retrying && millis() - first_miss_ms >= absent_limit) {
+          // Unless the scale already says the spool is gone: then the grace
+          // period only holds the old spool on the screen, the touch slowed by
+          // the fast re-polls, and the location question back by 2.5 s.
+          const bool weight_gone = weightSaysSpoolGone() &&
+                                   nfc_fast_polls >= NFC_GONE_MIN_MISSES;
+          if (weight_gone || (!retrying && millis() - first_miss_ms >= absent_limit)) {
             nfc_stat_removals++;
+            Serial.printf("NFC: tag removed (gap %u ms, %d fast re-polls, %s)\n",
+              (unsigned)(millis() - first_miss_ms), nfc_fast_polls,
+              weight_gone ? "weight gone" : "grace period over");
+            logSDf("NFC: tag removed after %u ms (%s)",
+                   (unsigned)(millis() - first_miss_ms),
+                   weight_gone ? "weight gone" : "grace period over");
             nfc_fast_polls = 0;
-            Serial.printf("NFC: tag removed (gap %u ms, %d fast re-polls exhausted)\n",
-              (unsigned)(millis() - first_miss_ms), NFC_FAST_POLL_MAX);
-            logSD("NFC: tag removed");
             tag_present = false;
             tag_absent_since_ms = millis();
             nfc_absent_count = 0;
@@ -1780,6 +1976,11 @@ void appLoop() {
                      scale_weight_g, loc_weight_ref);
             } else {
               ntag_handled_uid[0] = '\0';
+              // The spool left before its verdict was in: nothing to paint it
+              // on. The inventory still comes in for cache and index. Not in
+              // the branch above, where the spool is still there and nothing
+              // would look it up again.
+              lookupAbandon();
             }
             TagSeen::forget();
             link_popup_dismissed = false;   // Reset flag → next spool can show popup
@@ -1872,9 +2073,13 @@ void appLoop() {
   // edge check keeps it from invalidating four LVGL objects every pass.
   {
     static int link_bar_state = -1;
-    const int s = (tag_present && !sm_found) ? 1 : 0;
+    // A lookup waiting for its inventory is a state of its own: no buttons
+    // until the verdict is in, see updateLinkButton().
+    const int s = (tag_present && lookupPending()) ? 2
+                : (tag_present && !sm_found)       ? 1 : 0;
     if (s != link_bar_state) { link_bar_state = s; updateLinkButton(); }
   }
 
+  perfSection("tail");
   delay(5);
 }

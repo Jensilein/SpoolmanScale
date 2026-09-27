@@ -42,8 +42,12 @@ void backendRefreshMode();
 // --- reading -------------------------------------------------
 int  backendGetSpoolJson(const char* base_url, int spool_id, JsonDocument& doc,
        uint32_t timeout_ms = 8000, DeserializationError* out_err = nullptr);
+// archived_only: a backend that can filter on it answers with the archived
+// spools alone (FilaMan); the others answer as for allow_archived, active
+// ones included, so a caller still checks each spool's "archived".
 int  backendGetSpoolListJson(const char* base_url, bool allow_archived, JsonDocument& doc,
-       uint32_t timeout_ms = 8000, JsonDocument* filter = nullptr, DeserializationError* out_err = nullptr);
+       uint32_t timeout_ms = 8000, JsonDocument* filter = nullptr, DeserializationError* out_err = nullptr,
+       bool archived_only = false);
 int  backendGetLocationsJson(const char* base_url, JsonDocument& doc,
        uint32_t timeout_ms = 8000, DeserializationError* out_err = nullptr);
 int  backendGetSpoolFieldsJson(const char* base_url, JsonDocument& doc,
@@ -52,6 +56,30 @@ int  backendGetHealthCode(const char* base_url, uint32_t timeout_ms = 3000);
 bool backendGetVersion(const char* base_url, char* out_version, size_t out_size,
        uint32_t timeout_ms = 3000);
 int  backendCountActiveSpools(const char* base_url, uint32_t timeout_ms = 6000);
+
+// A fingerprint of the active inventory: how many spools, and the id of one
+// witness among them - the newest where the server can sort. Under a kilobyte
+// where the list is 176 kB, so a caller holding a copy of the list can ask
+// whether it still describes the same set of spools.
+//
+// It proves the set, not the content: a weight written elsewhere moves
+// neither number.
+//
+// Beside backendCountActiveSpools() rather than in its place, because on
+// BamBuddy the two part ways - the count can be had for the price of the
+// list, the stamp cannot and answers BACKEND_NOT_SUPPORTED without a request.
+// So does a server that answered but sends no count. Every other return is
+// the HTTP code as it came, so serverReachIsNetworkFailure() can read it.
+//
+// Two seconds, not the usual five or more: this runs without a loading
+// overlay, and the screen stands still for as long as it takes.
+#define SPOOL_STAMP_TIMEOUT_MS 2000
+struct InventoryStamp {
+  int count;        // active spools, -1 until a request succeeded
+  int witness_id;   // 0 for an empty inventory
+};
+int  backendInventoryStamp(const char* base_url, InventoryStamp* out,
+       uint32_t timeout_ms = SPOOL_STAMP_TIMEOUT_MS);
 
 // Date of the last weighing, taken from FilaMan's spool event log. Spoolman
 // keeps no such history and answers false, there the scale writes the date
@@ -147,6 +175,9 @@ bool backendNativeTagsAbsent();
 // whether the server has the second column at all - so it belongs in the loop,
 // never in a screen build and never in an LVGL callback.
 bool backendCanHoldSecondTag();
+// What backendCanHoldSecondTag() answered last, without asking anything:
+// 1 or 0, -1 before it was asked for the first time.
+int backendSecondTagKnown();
 
 // This scale's id in Spoolman's reader list, stable across reboots.
 const char* backendReaderId();
@@ -306,6 +337,13 @@ int  backendPatchSpoolLocation(const char* base_url, int spool_id,
 int  backendPatchSpoolLastDried(const char* base_url, int spool_id, const char* iso_datetime,
        uint32_t timeout_ms = 5000);
 
+// Whether backendPatchSpoolLastDried() has anywhere to write right now,
+// without asking the server. False on BamBuddy with the drying target off,
+// or pointed at a Spoolman the inventory is not kept in. Asked before an
+// answer is offered that would write several spools from a worker task, so
+// such a batch never starts only to fail spool by spool.
+bool backendCanPatchLastDried();
+
 // --- ams slots -----------------------------------------------
 
 // Whether the active backend can show the AMS at all. BamBuddy reads it from
@@ -348,6 +386,17 @@ int  backendFindSpoolSlot(int spool_id, int printer_id, int* out_ams,
 // state carries the id and no request is due at all.
 int  backendFindBaySpool(int printer_id, int ams_id, int tray_id,
        uint32_t timeout_ms = 8000);
+
+// Every assigned bay of a printer, from a single request. BamBuddy only:
+// FilaMan's display answer already names the spool per bay.
+int  backendFindPrinterSpools(int printer_id, AmsSlotSpool* out, uint8_t max,
+       uint8_t* out_count, uint32_t timeout_ms = 8000);
+
+// The same for every bay of one unit, from a single request: out_by_tray[i]
+// is the spool in bay i, 0 where none is on file. BamBuddy only, for the
+// same reason. Returns 200 or a negative code.
+int  backendFindUnitSpools(int printer_id, int ams_id, int* out_by_tray,
+       uint8_t n, uint32_t timeout_ms = 8000);
 
 // Everything the database holds about one spool, for the detail card behind
 // an AMS bay. Reads through backendGetSpoolJson(), so it needs no backend

@@ -6,6 +6,7 @@
 #include "app/app_state.h"
 #include "services/backend.h"
 #include "services/backend_api.h"
+#include "services/backend_job.h"
 #include "services/github_release.h"
 #include "web/web_shell.h"
 
@@ -80,20 +81,22 @@ static void runSpools() {
     if (label.length() && name.length()) label += " ";
     label += name;
     if (mat.length()) label += " (" + mat + ")";
-    label.replace("\\", "");
-    label.replace("\"", "'");
     if (!first) out += ",";
     first = false;
-    out += "{\"id\":" + String(id) + ",\"label\":\"" + label + "\"}";
+    // Escaped rather than stripped of two characters: a tab or a line break in
+    // a name made the reply malformed just the same, and the page's r.json()
+    // then threw and left the list empty.
+    out += "{\"id\":" + String(id) + ",\"label\":\"" + jsonEsc(label.c_str()) + "\"}";
   }
   out += "]";
   s_res.ok = true;
 }
 
 static void runGhCheck() {
+  s_res.image_size = 0;
   s_res.ok = githubLatestTag(s_flag, s_res.tag, sizeof(s_res.tag),
                              s_res.pub, sizeof(s_res.pub),
-                             s_res.err, sizeof(s_res.err));
+                             s_res.err, sizeof(s_res.err), &s_res.image_size);
 }
 
 static void runGhNotes() {
@@ -134,6 +137,8 @@ static void webJobTask(void* arg) {
 
 bool webJobStart(WebJobKind kind, const char* arg, bool flag) {
   if (s_state != WJS_IDLE || kind == WJ_NONE) return false;
+  // One inventory at a time, device wide, see backend_job.h.
+  if (kind == WJ_SPOOLS && backendJobState() == BJS_RUNNING) return false;
   // Checked here rather than inside the task: the stack comes out of the
   // heap the moment the task is created, so testing afterwards would be
   // testing the wrong number.

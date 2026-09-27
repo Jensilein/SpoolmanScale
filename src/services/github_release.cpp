@@ -14,6 +14,15 @@
 #include "services/ota_state.h"
 
 #define GH_REPO "Niko11111/SpoolmanScale"
+// The release asset the device flashes, see githubFlashTag().
+#define GH_IMAGE_ASSET "SpoolmanScale.bin"
+
+// The image's size out of a release's asset list.
+static uint32_t imageSizeOf(JsonVariantConst rel) {
+  for (JsonObjectConst a : rel["assets"].as<JsonArrayConst>())
+    if (strcmp(a["name"] | "", GH_IMAGE_ASSET) == 0) return a["size"] | 0u;
+  return 0;
+}
 
 // No bytes for this long while the socket is still open: the download is
 // stuck, not slow. GitHub's CDN streams a 2 MB image in a few seconds.
@@ -24,16 +33,19 @@
 // the release assets and GitHub Pages to Let's Encrypt; the bundle carries
 // both and whatever they move to next.
 extern const uint8_t x509_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
+extern const uint8_t x509_crt_bundle_end[] asm("_binary_x509_crt_bundle_end");
 
 void githubTrust(WiFiClientSecure &client) {
-  client.setCACertBundle(x509_crt_bundle_start);
+  client.setCACertBundle(x509_crt_bundle_start, x509_crt_bundle_end - x509_crt_bundle_start);
 }
 
 bool githubLatestTag(bool prerelease, char *tag, size_t tag_len,
                      char *published, size_t pub_len,
-                     char *err, size_t err_len) {
+                     char *err, size_t err_len, uint32_t *image_size) {
   if (!tag || tag_len == 0) return false;
   tag[0] = '\0';
+  uint32_t found_size = 0;
+  if (image_size) *image_size = 0;
   if (published && pub_len) published[0] = '\0';
   if (err && err_len) err[0] = '\0';
 
@@ -80,6 +92,8 @@ bool githubLatestTag(bool prerelease, char *tag, size_t tag_len,
     f["tag_name"] = true;
     f["published_at"] = true;
     f["draft"] = true;
+    f["assets"][0]["name"] = true;
+    f["assets"][0]["size"] = true;
 
     JsonDocument doc;
     jerr = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
@@ -97,6 +111,8 @@ bool githubLatestTag(bool prerelease, char *tag, size_t tag_len,
             strncpy(published, rel["published_at"] | "", pub_len - 1);
             published[pub_len - 1] = '\0';
           }
+          found_size = imageSizeOf(rel);
+          if (image_size) *image_size = found_size;
           break;
         }
       }
@@ -105,6 +121,8 @@ bool githubLatestTag(bool prerelease, char *tag, size_t tag_len,
     JsonDocument filter;
     filter["tag_name"] = true;
     filter["published_at"] = true;
+    filter["assets"][0]["name"] = true;
+    filter["assets"][0]["size"] = true;
 
     JsonDocument doc;
     jerr = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
@@ -117,15 +135,17 @@ bool githubLatestTag(bool prerelease, char *tag, size_t tag_len,
         strncpy(published, doc["published_at"] | "", pub_len - 1);
         published[pub_len - 1] = '\0';
       }
+      found_size = imageSizeOf(doc);
+      if (image_size) *image_size = found_size;
     }
   }
 
   // Enough to diagnose the next failure without guessing. "No release found"
   // and "JSON error" looked identical from the outside before this, and both
   // have several possible causes.
-  logSDf("OTA check: HTTP %d len=%d heap %u->%u pre=%d err=%s entries=%d tag='%s'",
+  logSDf("OTA check: HTTP %d len=%d heap %u->%u pre=%d err=%s entries=%d tag='%s' image=%u",
          code, payload_len, (unsigned)heap_before, (unsigned)heap_parse,
-         prerelease ? 1 : 0, jerr.c_str(), entries, tag);
+         prerelease ? 1 : 0, jerr.c_str(), entries, tag, (unsigned)found_size);
   Serial.printf("OTA check: len=%d heap %u->%u err=%s entries=%d tag='%s'\n",
                 payload_len, (unsigned)heap_before, (unsigned)heap_parse,
                 jerr.c_str(), entries, tag);
@@ -255,6 +275,12 @@ bool githubFlashTag(const char *tag, const char *sha256_hex,
     if (err && err_len) snprintf(err, err_len, "%s", "No release selected");
     return false;
   }
+  // The tag becomes part of the download URL below, and it can come from the
+  // web form. The same shape check the release lookup already makes.
+  if (!tagLooksSafe(tag)) {
+    if (err && err_len) snprintf(err, err_len, "%s", "Bad tag");
+    return false;
+  }
   const bool check_sha = (sha256_hex && strlen(sha256_hex) == 64);
 
   // Keeps the background check from opening a second TLS connection while the
@@ -273,7 +299,7 @@ bool githubFlashTag(const char *tag, const char *sha256_hex,
   // that works for both kinds.
   String url = "https://github.com/" GH_REPO "/releases/download/";
   url += tag;
-  url += "/SpoolmanScale.bin";
+  url += "/" GH_IMAGE_ASSET;
   Serial.printf("GitHub OTA URL: %s\n", url.c_str());
   http.begin(client, url);
   http.addHeader("User-Agent", "SpoolmanScale-ESP32");
@@ -314,7 +340,7 @@ bool githubFlashTag(const char *tag, const char *sha256_hex,
   // was written rather than over what was received.
   mbedtls_sha256_context sha;
   mbedtls_sha256_init(&sha);
-  mbedtls_sha256_starts_ret(&sha, 0);
+  mbedtls_sha256_starts(&sha, 0);
 
   uint8_t buf8[512];
   while (http.connected() && (len > 0 || len == -1)) {
@@ -323,7 +349,7 @@ bool githubFlashTag(const char *tag, const char *sha256_hex,
       size_t toRead = min(available, sizeof(buf8));
       size_t rd = stream->readBytes(buf8, toRead);
       if (Update.write(buf8, rd) != rd) { write_failed = true; break; }
-      mbedtls_sha256_update_ret(&sha, buf8, rd);
+      mbedtls_sha256_update(&sha, buf8, rd);
       done += rd;
       last_data = millis();
       if (len > 0) len -= rd;
@@ -341,7 +367,7 @@ bool githubFlashTag(const char *tag, const char *sha256_hex,
   http.end();
 
   unsigned char digest[32];
-  mbedtls_sha256_finish_ret(&sha, digest);
+  mbedtls_sha256_finish(&sha, digest);
   mbedtls_sha256_free(&sha);
   char got[65];
   hexDigest(digest, sizeof(digest), got, sizeof(got));

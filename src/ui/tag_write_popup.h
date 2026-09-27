@@ -32,6 +32,11 @@ void startTagWriteNoAsk(int spool_id);
 
 void requestTagEraseAsk();
 
+// The tag view's erase button. Its own words, because nothing was unlinked,
+// and any NTAG that is not blank qualifies: a record this scale cannot read is
+// as worth erasing as one it can. Built at once, so from appLoop() only.
+void askTagEraseFromView();
+
 // Checks the tag on the reader against the spool it is bound to and offers to
 // write it again when the two disagree. Loop task only - it fetches the spool.
 // Does nothing unless g_tagmismatch_ask is on.
@@ -43,3 +48,10 @@ bool isTagWritePopupOpen();
 // the write or the erase, and shows the result when it is done. Called from
 // appLoop() like the other deferred UI work.
 void handleTagWritePopupDeferredActions();
+
+// The write or rewrite question as the browser sees it: the spool it is about,
+// 0 while none stands. An erase question is not offered there.
+int  tagWriteAskSpool();
+bool tagWriteAskIsRewrite();
+// The browser's answer, parked exactly like the buttons park theirs.
+void tagWriteAskAnswer(bool yes);

@@ -51,6 +51,12 @@ bool filamanGetVersion(const char* base_url, char* out_version, size_t out_size,
 int filamanCountActiveSpools(const char* base_url, const char* api_key,
                              uint32_t timeout_ms = 6000);
 
+// That count and the id of the first spool on the same one item page. Returns
+// the HTTP code as it came, -2 for a body that did not parse. 200 with
+// *out_count at -1 is an answer without a total.
+int filamanInventoryStamp(const char* base_url, const char* api_key,
+                          int* out_count, int* out_witness_id, uint32_t timeout_ms);
+
 // Timestamp of the most recent weighing, read from the spool event log.
 // FilaMan records every measurement itself, including the ones this scale
 // reports, so nothing has to be written to get a "last weighed" date.
@@ -313,11 +319,14 @@ int filamanPatchSpoolLocation(const char* base_url, const char* api_key, int spo
 // FilaMan's {items,page,page_size,total} envelope already unwrapped.
 // When search_term is given, the server filters and usually returns a single
 // entry, which avoids pulling the whole inventory for a tag lookup.
+// archived_only asks for the archived spools alone (status 6), which is what
+// the lookup's archive pass reads: 12 kB instead of the whole 450 kB again.
 int filamanGetSpoolListJson(const char* base_url, const char* api_key,
                             bool include_archived, JsonDocument& out_doc,
                             const char* search_term = nullptr,
                             int page_size = 100, uint32_t timeout_ms = 15000,
-                            DeserializationError* out_err = nullptr);
+                            DeserializationError* out_err = nullptr,
+                            bool archived_only = false);
 
 // ---------- the device's own auto-assign settings ----------
 //

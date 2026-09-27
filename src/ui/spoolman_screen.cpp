@@ -192,15 +192,9 @@ static void runAddressTest() {
 void buildSpoolmanScreen() {
   logSD("BUILD: SpoolmanScreen");
   // This is the most object-heavy screen in the project (numpad + header,
-  // ~40 LVGL objects). Log the LVGL pool state before allocating so an
-  // exhausted pool is visible in the log instead of an unexplained halt.
-  if (sd_verbose) {
-    lv_mem_monitor_t lv_mem;
-    lv_mem_monitor(&lv_mem);
-    logSDf("[verbose] buildSpoolmanScreen: lv_free=%u lv_biggest=%u lv_used=%u%%",
-      (unsigned)lv_mem.free_size, (unsigned)lv_mem.free_biggest_size,
-      (unsigned)lv_mem.used_pct);
-  }
+  // ~40 LVGL objects). Log LVGL's memory before allocating, so a screen that
+  // ends up in PSRAM is visible in the log.
+  logLvMem("spoolman", 0);
   releaseScreen(&scr_spoolman);
   scr_spoolman = lv_obj_create(lv_scr_act());
   lv_obj_set_size(scr_spoolman, 480, 320);
@@ -214,10 +208,10 @@ void buildSpoolmanScreen() {
 
   sp_locked = !hostIsNumeric(backendHost());
 
-  // Header. The product name is not translated, so it is composed here
-  // instead of living in lang.cpp twice.
+  // Header. The product name is not translated, so the table holds only the
+  // words around it, and the name is filled in here.
   char buf_title[32];
-  snprintf(buf_title, sizeof(buf_title), "%s Server", backendName());
+  snprintf(buf_title, sizeof(buf_title), T(STR_SERVER_TITLE), backendName());
   buildSubHeader(scr_spoolman, buf_title,
     [](lv_event_t *e){
       logSD("BTN: Spoolman -> Back");
@@ -234,7 +228,7 @@ void buildSpoolmanScreen() {
 
   // Hint: default port of the active backend, font14, y=52. Only a hint,
   // nothing is appended - an address typed without a port goes to 80.
-  const char* def_port = (backendMode() == BACKEND_FILAMAN)  ? "8002"
+  const char* def_port = (backendMode() == BACKEND_FILAMAN)  ? "8083"
                        : (backendMode() == BACKEND_BAMBUDDY) ? "8000"
                                                              : "7912";
   char buf_hint[48];
@@ -467,13 +461,19 @@ void buildSpoolmanScreen() {
     if (backendMode() != BACKEND_SPOOLMAN) {
       // Next comes the credential step, and those are entered in a browser.
       showOtaBrowserScreen(WEB_CTX_SETUP);
+    } else if (setup_active) {
+      // Spoolman needs no step of its own any more: the tag source is picked
+      // on the first scan and a missing field is created on its first write
+      // (Nikolai, 25.09.2026). Deferred, never from the callback.
+      cal_reminder_pending = true;
     } else {
-      showExtraFieldsScreen(setup_active);
+      showExtraFieldsScreen(false);
     }
   }, LV_EVENT_CLICKED, NULL);
   lv_obj_t *lbl_ef = lv_label_create(btn_sp_extra_fields);
   { char ef_buf[32];
-    if (backendMode() != BACKEND_SPOOLMAN) snprintf(ef_buf, sizeof(ef_buf), "%s  " LV_SYMBOL_RIGHT, T(STR_BTN_NEXT));
+    if (backendMode() != BACKEND_SPOOLMAN || setup_active)
+      snprintf(ef_buf, sizeof(ef_buf), "%s  " LV_SYMBOL_RIGHT, T(STR_BTN_NEXT));
     else                                   snprintf(ef_buf, sizeof(ef_buf), "Extra Fields  " LV_SYMBOL_RIGHT);
     lv_label_set_text(lbl_ef, ef_buf); }
   lv_obj_set_style_text_color(lbl_ef, lv_color_hex(0x28d49a), 0);
@@ -583,7 +583,7 @@ void showSpoolmanFailScreen(bool is_setup_flow) {
     // Delete this screen first to avoid it being accessed during navigation
     if (scr_spoolman_fail) { lv_obj_del(scr_spoolman_fail); scr_spoolman_fail = nullptr; }
     if (spoolman_fail_is_setup) {
-      showExtraFieldsScreen(true);
+      cal_reminder_pending = true;
     } else {
       closeConnectionScreen();
       buildConnectionScreen();

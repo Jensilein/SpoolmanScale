@@ -47,6 +47,14 @@ enum TagWriteResult : uint8_t {
   TW_ERR_WRITE,       // a page write failed part way through
 };
 
+// How far a write or an erase has come, in pages, for a bar on the device.
+// Called from inside the job after every page the tag took, on the loop task,
+// with the tag still selected: the listener may redraw, and must not go near
+// the reader or the network. `total` is what this job will write, 0 done is
+// said once before the first page. nullptr stops the calls.
+typedef void (*TagWriteProgressFn)(uint16_t done, uint16_t total);
+void tagWriteSetProgress(TagWriteProgressFn fn);
+
 // Parks a request. The write itself runs in tagWriteTick(), because the NFC
 // bus belongs to the loop task and the HTTP handler is not on it.
 // link also writes the tag's UID onto the spool record, so presenting it
@@ -142,6 +150,7 @@ enum TagKind : uint8_t {
 };
 uint8_t     tagCachedKindCode();
 const char* tagCachedContent();
+const char* tagCachedRaw();
 // User memory of the tag on the reader, 0 when there is none or it reports no
 // size. Read on the loop task with everything else, so a web handler can ask
 // without touching the reader.
@@ -160,8 +169,15 @@ size_t      tagNdefSizeFor(size_t json_len);
 // Field by field view of a tag, so the page can show it as a swatch rather
 // than one line of text. Empty strings and zeros mean the format does not
 // carry that field.
+//
+// brand and material stay at 16 characters: tagDiffersFromSpool() compares
+// them against a record built from the backend, and an ACE tag holds no more
+// than 16. Longer on one side only would call every long vendor a mismatch.
 struct TagInfo {
-  char     fmt[12];        // ACE, OpenSpool, blank, unknown
+  char     fmt[12];        // ACE, OpenSpool, blank, unknown; Bambu, Snapmaker,
+                           // unsupported for a MIFARE tag
+  char     tray_uuid[33];  // Bambu only, 32 hex characters
+  char     prod_date[16];  // as the tag's decoder left it
   char     sku[17];
   char     brand[17];
   char     material[17];
@@ -169,6 +185,9 @@ struct TagInfo {
   uint8_t  r, g, b;
   uint16_t et_lo, et_hi, bed_lo, bed_hi;
   uint16_t dia_x100, length_m, weight_g;
+  int      spool_id;      // 0 if none
+  char     proto[17];     // e.g. "openspool"
+  char     version[12];   // e.g. "1.0"
 };
 
 // Serialises a TagInfo as a JSON object, omitting fields the format lacks.
@@ -185,6 +204,9 @@ void tagReadInfoNow();
 
 // True when the cached read holds a record worth showing: a format that was
 // recognised, rather than an empty tag or bytes nothing could make sense of.
+// NTAG records only. A Bambu or Snapmaker tag is in the cache for the pages
+// that show it, but every caller of this means a record the scale wrote or
+// can write, and the FilaMan scan answers a Bambu tag from g_tag instead.
 bool tagCachedHasRecord();
 
 // Whether the record on the tag disagrees with the spool it is bound to.

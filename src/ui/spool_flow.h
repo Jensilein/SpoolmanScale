@@ -2,8 +2,18 @@
 
 #include <lvgl.h>
 
+// spoolHasAnyTag(JsonObjectConst), the link flow's rule for what counts as
+// bound, is public as well but declared where it is used, in
+// spoolman_lookup.cpp: this header is included after lang.h in places, and
+// ArduinoJson's templates do not survive the T() macro in front of them.
+
 void fetchUnlinkedSpools();
-void fetchAllSpoolsForLink(bool is_bambu, const char* material_filter, bool archived_only = false);
+// The link list: DONE when it came out of the cache and is built, PENDING
+// while the backend worker fetches it (the loop carries on, see
+// linkFetchTick() in spool_flow.cpp), FAILED when there is none to show - the
+// popup explains, the picker stays shut.
+enum LinkFetch : uint8_t { LINK_FETCH_FAILED, LINK_FETCH_DONE, LINK_FETCH_PENDING };
+LinkFetch fetchAllSpoolsForLink(bool is_bambu, const char* material_filter, bool archived_only = false);
 void closeLinkList();
 void showLinkList();
 void showLinkEntryPopup(bool is_bambu);
@@ -51,10 +61,11 @@ void showFilteredSpoolList(const char* vendor_name, const char* material_prefix,
 
 void showCopyEntryPopup();
 void closeCopyEntryPopup();
-void fetchSpoolsForCopy(bool archived, const char* material_filter, bool is_bambu_tag = false);
 void showCopySpoolList();
+struct CopyLook;   // spool_flow_internal.h
 void showCopyConfirmPopup(int template_spool_id, int template_filament_id, const char* template_name,
-                          float template_remaining, float template_initial, float template_spool_w);
+                          float template_remaining, float template_initial, float template_spool_w,
+                          const CopyLook* look = nullptr);
 void doCopySpoolCreate(int template_spool_id, int template_filament_id,
                        float template_initial, float template_spool_w);
 

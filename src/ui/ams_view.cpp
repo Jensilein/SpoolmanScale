@@ -4,10 +4,14 @@
 #include <lvgl.h>
 #include <string.h>
 
+#include "app_config.h"
 #include "app/app_state.h"
 #include "app/deferred_actions.h"
 #include "hardware/sd_logger.h"
+#include "services/ams_weights.h"
 #include "services/backend_api.h"
+#include "services/http_progress.h"
+#include "services/server_reach.h"
 #include "services/prefs_store.h"
 #include "ui/ams_detail_popup.h"
 #include "ui/loading_overlay.h"
@@ -88,6 +92,9 @@
 #define AMSV_COL_LINE     UI_COL_ROW_PRESSED
 #define AMSV_COL_ACCENT   UI_COL_ACCENT
 #define AMSV_COL_MUTED    UI_COL_CAPTION
+// A running cycle: amber, because the unit is warm. Green read as a state
+// that is fine rather than as something happening.
+#define AMSV_COL_WARM     UI_COL_WARN
 #define AMSV_COL_EMPTY    UI_COL_EMPTY
 
 // Above this a filament colour is bright enough to need dark text on it.
@@ -114,6 +121,9 @@ static AmsSlotState s_state;
 
 static bool s_build_pending = false;
 static bool s_fetch_pending = false;
+// Weights came in while the detail card stood over the grid. Drawn as soon
+// as the card is gone; without this they would wait for the next fetch.
+static bool s_weights_redraw = false;
 static bool s_close_pending = false;
 // The printers, fetched once and kept: their names are what the status line
 // shows, and asking again on every redraw would double the cost of a reload.
@@ -133,6 +143,15 @@ static int  s_detail_tray    = -1;
 static bool s_info_mode      = false;
 static lv_obj_t* s_info_btn  = nullptr;
 static lv_obj_t* s_headline_lbl = nullptr;
+// PICK only: the footer's Cancel drains over PICK_COUNTDOWN_MS and the page
+// closes as if it was pressed. The clock restarts on every tap on the page
+// and stands still while a detail card is open, so it only runs out on a
+// question nobody is looking at. Measured like the AMS question's, minus the
+// time a blocking fetch held the loop.
+static lv_obj_t*     s_cancel_fill   = nullptr;
+static lv_coord_t    s_cancel_fill_w = -1;
+static unsigned long s_pick_start_ms = 0;
+static uint32_t      s_pick_stall    = 0;
 // Where the page goes back to. Opened from the scale menu it returns there;
 // from the header chip, the zone-4 button or the picker it lands on the main
 // screen, which is where those were pressed.
@@ -200,6 +219,8 @@ static void closeAmsView() {
   s_headline_lbl = nullptr;
   s_printer_btn  = nullptr;
   s_printer_lbl  = nullptr;
+  s_cancel_fill  = nullptr;
+  s_cancel_fill_w = -1;
 }
 
 void hideAmsViewOverlays() {
@@ -379,9 +400,11 @@ static lv_obj_t* buildTile(lv_obj_t* parent, const AmsSlotUnit& unit,
   lv_obj_set_style_pad_all(tile, 0, 0);
   lv_obj_set_style_shadow_width(tile, 0, 0);
 
-  const bool filled = tray.exists && tray.has_color;
-  uint32_t bg = filled ? tray.color : AMSV_COL_EMPTY;
-  lv_obj_set_style_bg_color(tile, lv_color_hex(bg), 0);
+  // A see-through filament fades from its hue into the ground, like every
+  // other swatch, so a clear spool reads as glass instead of an empty bay.
+  const bool filled = tray.exists && tray.color.valid;
+  if (filled) swatchPaint(tile, tray.color);
+  else        lv_obj_set_style_bg_color(tile, lv_color_hex(AMSV_COL_EMPTY), 0);
 
   // The loaded bay is the one thing on this page that says "this is printing
   // right now", so it gets the accent border rather than a colour change.
@@ -394,9 +417,12 @@ static lv_obj_t* buildTile(lv_obj_t* parent, const AmsSlotUnit& unit,
   if (!filled) {
     text_col = AMSV_COL_MUTED;
   } else {
-    const uint32_t r = (tray.color >> 16) & 0xFF;
-    const uint32_t g = (tray.color >> 8) & 0xFF;
-    const uint32_t b = tray.color & 0xFF;
+    // Judged where the text sits, the middle of the tile, which on a fade is
+    // darker than the hue at the top.
+    const uint32_t mid = swatchCenterRgb(tray.color);
+    const uint32_t r = (mid >> 16) & 0xFF;
+    const uint32_t g = (mid >> 8) & 0xFF;
+    const uint32_t b = mid & 0xFF;
     const uint32_t luma = (299 * r + 587 * g + 114 * b) / 1000;
     text_col = (luma > AMSV_LUMA_SWITCH) ? 0x000000 : 0xFFFFFF;
   }
@@ -494,31 +520,11 @@ static void buildUnitHeader(lv_obj_t* parent, const AmsSlotUnit& unit,
   lv_obj_set_style_text_font(l, &lv_font_montserrat_ext_12, 0);
   lv_obj_set_pos(l, AMSV_MARGIN, y);
 
-  // Drying takes the right hand side while it runs: it is the one thing about
-  // a unit that is happening rather than merely being the case, and it says
-  // more than the humidity it replaces - which is high during a cycle anyway.
-  if (unit.drying) {
-    char dfmt[40], dbuf[48];
-    const bool with_time = (unit.dry_minutes > 0);
-    copyT(dfmt, sizeof(dfmt), with_time ? STR_AMSV_DRYING_TIME : STR_AMSV_DRYING_TEMP);
-    if (with_time) {
-      snprintf(dbuf, sizeof(dbuf), dfmt, (int)unit.dry_target_c,
-               (int)unit.dry_minutes);
-    } else {
-      snprintf(dbuf, sizeof(dbuf), dfmt, (int)unit.dry_target_c);
-    }
-    lv_obj_t* d = lv_label_create(parent);
-    if (!d) return;
-    lv_label_set_text(d, dbuf);
-    lv_obj_set_style_text_color(d, lv_color_hex(AMSV_COL_ACCENT), 0);
-    lv_obj_set_style_text_font(d, &lv_font_montserrat_ext_12, 0);
-    lv_obj_align(d, LV_ALIGN_TOP_RIGHT, -AMSV_MARGIN_R, y);
-    return;
-  }
-
-  if (unit.humidity == AMS_HUMIDITY_NA && unit.temp_c10 == AMS_TEMP_NA) return;
-
-  char right[32] = "";
+  // The right hand side: how the unit feels, and while a cycle runs what it
+  // is doing as well. Drying leads and the climate follows it rather than
+  // being replaced - a heated unit is exactly when its own temperature is
+  // worth reading.
+  char right[40] = "";
   if (unit.humidity != AMS_HUMIDITY_NA) {
     char fmt[16];
     copyT(fmt, sizeof(fmt), unit.humidity_is_level ? STR_AMSV_HUM_LEVEL : STR_AMSV_HUM_PCT);
@@ -531,10 +537,39 @@ static void buildUnitHeader(lv_obj_t* parent, const AmsSlotUnit& unit,
     strncat(right, tmp, sizeof(right) - strlen(right) - 1);
   }
 
+  char line[96] = "";
+  if (unit.drying) {
+    // Only the figures the printer really reported. An AMS HT sends the
+    // minutes left and no target temperature at all, and printing it anyway
+    // put the sentinel on the screen as "Trocknet -1 °C, 674 min".
+    char dfmt[40], dbuf[48];
+    const bool with_time = (unit.dry_minutes > 0);
+    const bool with_temp = (unit.dry_target_c > 0);
+    if (with_temp && with_time) {
+      copyT(dfmt, sizeof(dfmt), STR_AMSV_DRYING_TIME);
+      snprintf(dbuf, sizeof(dbuf), dfmt, (int)unit.dry_target_c,
+               (int)unit.dry_minutes);
+    } else if (with_temp) {
+      copyT(dfmt, sizeof(dfmt), STR_AMSV_DRYING_TEMP);
+      snprintf(dbuf, sizeof(dbuf), dfmt, (int)unit.dry_target_c);
+    } else if (with_time) {
+      copyT(dfmt, sizeof(dfmt), STR_AMSV_DRYING_MIN);
+      snprintf(dbuf, sizeof(dbuf), dfmt, (int)unit.dry_minutes);
+    } else {
+      copyT(dbuf, sizeof(dbuf), STR_AMSV_DRYING);
+    }
+    snprintf(line, sizeof(line), "%s%s%s", dbuf, right[0] ? "   " : "", right);
+  } else {
+    snprintf(line, sizeof(line), "%s", right);
+  }
+
+  if (!line[0]) return;
+
   lv_obj_t* r = lv_label_create(parent);
   if (!r) return;
-  lv_label_set_text(r, right);
-  lv_obj_set_style_text_color(r, lv_color_hex(AMSV_COL_MUTED), 0);
+  lv_label_set_text(r, line);
+  lv_obj_set_style_text_color(r,
+    lv_color_hex(unit.drying ? AMSV_COL_WARM : AMSV_COL_MUTED), 0);
   lv_obj_set_style_text_font(r, &lv_font_montserrat_ext_12, 0);
   lv_obj_align(r, LV_ALIGN_TOP_RIGHT, -AMSV_MARGIN_R, y);
 }
@@ -648,7 +683,62 @@ static void applyInfoMode() {
   }
 }
 
+static void restartPickCountdown() {
+  s_pick_start_ms = millis();
+  s_pick_stall    = httpStallTotalMs();
+}
+
+static unsigned long pickRemainingMs() {
+  unsigned long elapsed = millis() - s_pick_start_ms;
+  const uint32_t stalled = httpStallTotalMs() - s_pick_stall;
+  elapsed = (stalled >= elapsed) ? 0 : (elapsed - stalled);
+  if (elapsed >= PICK_COUNTDOWN_MS) return 0;
+  return PICK_COUNTDOWN_MS - elapsed;
+}
+
+// Inside the button's 1 px border, behind its label, not clickable.
+#define AMSV_FILL_W  (AMSV_FOOT_BTN_W - 2)
+#define AMSV_FILL_H  (AMSV_FOOT_BTN_H - 2)
+
+static void addCancelFill(lv_obj_t* btn) {
+  if (!btn) return;
+  lv_obj_set_style_pad_all(btn, 0, 0);
+  s_cancel_fill = lv_obj_create(btn);
+  if (!s_cancel_fill) return;
+  lv_obj_remove_style_all(s_cancel_fill);
+  lv_obj_set_size(s_cancel_fill, AMSV_FILL_W, AMSV_FILL_H);
+  lv_obj_set_pos(s_cancel_fill, 0, 0);
+  lv_obj_set_style_bg_color(s_cancel_fill, lv_color_hex(UI_COL_LINE), 0);
+  lv_obj_set_style_bg_opa(s_cancel_fill, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(s_cancel_fill, UI_RADIUS_BTN, 0);
+  lv_obj_clear_flag(s_cancel_fill, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_move_to_index(s_cancel_fill, 0);
+  s_cancel_fill_w = AMSV_FILL_W;
+  restartPickCountdown();
+}
+
+// From the loop, every pass the page stands. Returns true when the question
+// ran out and the page was asked to close.
+static bool tickPickCountdown() {
+  if (!s_cancel_fill || !s_scr || s_close_pending || s_pick_pending) return false;
+  if (lv_obj_has_flag(s_scr, LV_OBJ_FLAG_HIDDEN) || isAmsDetailPopupOpen()) {
+    restartPickCountdown();
+  }
+  const unsigned long rem = pickRemainingMs();
+  const lv_coord_t w = (lv_coord_t)((uint64_t)AMSV_FILL_W * rem / PICK_COUNTDOWN_MS);
+  if (w != s_cancel_fill_w) {
+    s_cancel_fill_w = w;
+    lv_obj_set_width(s_cancel_fill, w);
+  }
+  if (rem > 0) return false;
+  logSDf("AMSV: no bay chosen in %lus, closed as Cancel",
+         (unsigned long)(PICK_COUNTDOWN_MS / 1000));
+  s_close_pending = true;
+  return true;
+}
+
 static void footInfoCb(lv_event_t* e) {
+  restartPickCountdown();
   s_info_mode = !s_info_mode;
   // Safe inside the callback: nothing is created or freed here, only styles
   // and one label's text.
@@ -797,7 +887,7 @@ static void buildScreen() {
   if (s_mode == AMS_VIEW_PICK) {
     s_info_btn = footButton(240 - AMSV_FOOT_GAP / 2 - AMSV_FOOT_BTN_W,
                             STR_AMSV_INFO, false, footInfoCb);
-    footButton(240 + AMSV_FOOT_GAP / 2, STR_CANCEL, false, footCancelCb);
+    addCancelFill(footButton(240 + AMSV_FOOT_GAP / 2, STR_CANCEL, false, footCancelCb));
     applyInfoMode();
   } else if (s_mode == AMS_VIEW_WINDOW) {
     footButton(240 - AMSV_FOOT_GAP / 2 - AMSV_FOOT_BTN_W, STR_AMSV_BTN_WINDOW, true, footOpenCb);
@@ -853,7 +943,7 @@ static void fetchAndDraw() {
   }
 
   if (s_printers.count == 0) {
-    int code = backendListPrinters(s_printers, 8000);
+    int code = serverReachNote(backendListPrinters(s_printers, 8000), true);
     if (!s_scr) return;
     if (code != 200) {
       setStatusFmt(STR_AMSV_ERR_HTTP, code);
@@ -875,7 +965,7 @@ static void fetchAndDraw() {
     s_printer_id = s_printers.p[s_printer_idx].id;
   }
 
-  int code = backendGetAmsState(s_printer_id, s_state, 8000);
+  int code = serverReachNote(backendGetAmsState(s_printer_id, s_state, 8000), true);
   if (!s_scr) return;
   if (code != 200) {
     setStatusFmt(STR_AMSV_ERR_HTTP, code);
@@ -968,24 +1058,57 @@ static void fetchAndDraw() {
   }
 
   layoutGrid(s_state);
+
+  // The grams the grid could not show. BamBuddy's answer carries the
+  // printer's percentage, the weighed figure sits in the inventory, and
+  // fetching it here would hold the first frame for a request per bay. So it
+  // is asked for in the background and laid over the tiles when it arrives.
+  amsWeightsStart(s_printer_id, s_state);
 }
 
-// The bay's own name, the way the unit header writes it: a name the user gave
+// Takes what the weight fetch found into the state the grid draws from, and
+// says whether anything changed.
+static bool applyWeights(const AmsWeightsResult& r) {
+  if (r.printer_id != s_printer_id) return false;   // the user switched printers
+  bool changed = false;
+  for (uint8_t i = 0; i < r.count; i++) {
+    if (r.item[i].grams < 0) continue;
+    for (uint8_t u = 0; u < s_state.unit_count; u++) {
+      AmsSlotUnit& unit = s_state.unit[u];
+      if (unit.ams_id != r.item[i].ams_id) continue;
+      for (uint8_t t = 0; t < unit.tray_count; t++) {
+        AmsSlotTray& tray = unit.tray[t];
+        if (tray.tray_id != r.item[i].tray_id || !tray.exists) continue;
+        if (tray.remain_g == r.item[i].grams) continue;
+        tray.remain_g = r.item[i].grams;
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
+// The unit's name, the way the unit header writes it: a name the user gave
 // the unit where there is one, otherwise "AMS 2" or "AMS HT 1" built from the
-// number, and the bay counted from one.
-static void bayName(const AmsSlotUnit& unit, const AmsSlotTray& tray,
-                    char* out, size_t n) {
-  char unit_name[AMS_NAME_MAX + 8];
+// number.
+static void unitName(const AmsSlotUnit& unit, char* out, size_t n) {
   if (unit.label[0]) {
-    snprintf(unit_name, sizeof(unit_name), "%s", unit.label);
+    snprintf(out, n, "%s", unit.label);
   } else if (unit.is_ext) {
-    copyT(unit_name, sizeof(unit_name), STR_AMSV_UNIT_EXT);
+    copyT(out, n, STR_AMSV_UNIT_EXT);
   } else {
     char fmt[24];
     copyT(fmt, sizeof(fmt), unit.is_ht ? STR_AMSV_UNIT_HT : STR_AMSV_UNIT);
     const int shown = unit.is_ht ? (unit.ams_id - 127) : (unit.ams_id + 1);
-    snprintf(unit_name, sizeof(unit_name), fmt, shown > 0 ? shown : 1);
+    snprintf(out, n, fmt, shown > 0 ? shown : 1);
   }
+}
+
+// The bay's own name: the unit's, and the bay counted from one.
+static void bayName(const AmsSlotUnit& unit, const AmsSlotTray& tray,
+                    char* out, size_t n) {
+  char unit_name[SD_UNIT_NAME_MAX];
+  unitName(unit, unit_name, sizeof(unit_name));
 
   char fmt[24];
   copyT(fmt, sizeof(fmt), STR_AMSD_BAY);
@@ -1003,12 +1126,12 @@ static void detailFromTray(const AmsSlotUnit& unit, const AmsSlotTray& tray,
 
   bayName(unit, tray, out.bay, sizeof(out.bay));
   out.color      = tray.color;
-  out.has_color  = tray.has_color;
   out.spool_id   = tray.spool_id;
   out.remain_pct = tray.remain;
   out.nozzle_min = tray.nozzle_min;
   out.nozzle_max = tray.nozzle_max;
   snprintf(out.material, sizeof(out.material), "%s", tray.name);
+  snprintf(out.printer_type, sizeof(out.printer_type), "%s", tray.type);
   snprintf(out.backup_of, sizeof(out.backup_of), "%s", tray.backup_of);
   snprintf(out.color_name, sizeof(out.color_name), "%s", tray.color_name);
 
@@ -1029,6 +1152,8 @@ static void openDetail(int ams_id, int tray_id) {
 
   static AmsSpoolDetail det;   // BSS: 200 bytes the loop task's stack is spared
   detailFromTray(*unit, *tray, det);
+  static AmsUnitSpools us;     // BSS as well
+  us = AmsUnitSpools{};
 
   loadingOverlayShow(T(STR_AMSD_LOADING));
 
@@ -1036,7 +1161,40 @@ static void openDetail(int ams_id, int tray_id) {
   // from, so there is nothing to look up. BamBuddy does not, and its
   // assignment list is the only place the pair is resolved.
   int spool_id = det.spool_id;
-  if (spool_id <= 0 && s_printer_id > 0) {
+  if (amsUnitOffersDriedAll(*unit) && backendCanPatchLastDried()) {
+    // An AMS 2 Pro: the card may offer to record a drying for the whole
+    // unit, so it needs every bay's spool rather than this one's. The
+    // assignment list holds them all, and asking it once for the unit takes
+    // the place of asking it for the bay - one request either way.
+    int by_tray[AMS_MAX_TRAYS] = {0};
+    bool need = (spool_id <= 0);
+    for (uint8_t t = 0; t < unit->tray_count; t++) {
+      if (unit->tray[t].exists && unit->tray[t].spool_id <= 0) need = true;
+    }
+    if (need && s_printer_id > 0) {
+      backendFindUnitSpools(s_printer_id, ams_id, by_tray, AMS_MAX_TRAYS);
+    }
+    for (uint8_t t = 0; t < unit->tray_count; t++) {
+      const AmsSlotTray& bay = unit->tray[t];
+      int id = bay.spool_id;
+      if (id <= 0 && bay.tray_id < AMS_MAX_TRAYS) id = by_tray[bay.tray_id];
+      if (bay.tray_id == (uint8_t)tray_id && spool_id <= 0 && id > 0) {
+        spool_id = id;
+        det.spool_id = id;
+      }
+      // Only bays with filament in them: an assignment can outlive the spool
+      // that was taken out, and that spool was not in the dryer.
+      if (!bay.exists || id <= 0) continue;
+      bool seen = false;
+      for (uint8_t k = 0; k < us.count; k++) {
+        if (us.spool_id[k] == id) seen = true;
+      }
+      if (!seen && us.count < AMS_MAX_TRAYS) us.spool_id[us.count++] = id;
+    }
+    unitName(*unit, us.name, sizeof(us.name));
+    us.printer_id = s_printer_id;
+    us.ams_id     = (uint8_t)ams_id;
+  } else if (spool_id <= 0 && s_printer_id > 0) {
     int found = backendFindBaySpool(s_printer_id, ams_id, tray_id);
     if (found > 0) {
       spool_id = found;
@@ -1046,11 +1204,33 @@ static void openDetail(int ams_id, int tray_id) {
 
   if (spool_id > 0) backendGetSpoolDetail(spool_id, det);
 
+  // The printer's word against the database's. The grid above is drawn from
+  // the printer and the card from the spool the backend has assigned to the
+  // bay, and nothing on the BamBuddy side keeps the two in step once Spoolman
+  // owns the assignments: a user swapped PLA for PETG and the card went on
+  // showing the PLA spool under a tile that said PETG.
+  det.type_conflict = det.found &&
+                      sdMaterialContradicts(det.printer_type, det.material);
+  if (det.type_conflict) {
+    logSDf("AMSVIEW: bay %d/%d reports %s, spool %d on file is %s - assignment stale?",
+           ams_id, tray_id, det.printer_type, det.spool_id, det.material);
+    // A spool that is most likely not in the bay was not in the dryer either.
+    // Out of the unit's list, the card stops offering "all spools in this
+    // unit" and asks about this one spool alone - under the warning it shows.
+    uint8_t kept = 0;
+    for (uint8_t k = 0; k < us.count; k++) {
+      if (us.spool_id[k] != det.spool_id) us.spool_id[kept++] = us.spool_id[k];
+    }
+    us.count = kept;
+  }
+
   loadingOverlayHide();
 
   // The page can have gone while the request ran - a tap on back is seen by
   // the loading overlay's own refresh.
   if (!s_scr) return;
+  // Always set, so a unit from an earlier card cannot survive into this one.
+  amsDetailSetUnit(us.count > 0 ? &us : nullptr);
   showAmsDetailPopup(det);
 }
 
@@ -1115,6 +1295,7 @@ void handleAmsViewDeferredActions() {
 
   if (s_build_pending) {
     s_build_pending = false;
+    s_weights_redraw = false;
     s_printer_id = 0;
     // Built first, then everything else hidden, then shown: the same order
     // every other overlay uses, and the reason buildOverlayScreen() hands
@@ -1129,5 +1310,23 @@ void handleAmsViewDeferredActions() {
   if (s_fetch_pending) {
     s_fetch_pending = false;
     fetchAndDraw();
+    // A reload or a printer switch is a tap on the page, and the list only
+    // stands to be chosen from once it is drawn.
+    restartPickCountdown();
+    return;
+  }
+
+  if (tickPickCountdown()) return;
+
+  // The weights that came in behind the first frame. Redrawn only with the
+  // page really in front: rebuilding the tiles under an open detail card
+  // would hold two sets of them in the pool at once for nothing.
+  if (amsWeightsState() == AWS_DONE) {
+    if (s_scr && applyWeights(amsWeightsResult())) s_weights_redraw = true;
+    amsWeightsTake();
+  }
+  if (s_weights_redraw && !isAmsDetailPopupOpen()) {
+    s_weights_redraw = false;
+    if (s_scr) layoutGrid(s_state);
   }
 }

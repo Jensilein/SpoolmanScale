@@ -11,6 +11,7 @@
 #include "app_config.h"
 #include "hardware/sd_logger.h"
 #include "services/github_release.h"
+#include "services/partition_layout.h"
 #include "services/ota_state.h"
 #include "services/prefs_store.h"
 #include "services/update_check.h"
@@ -56,6 +57,7 @@ static bool          s_check_pre = false; // the channel it was for
 static bool          s_check_new = false;
 static bool          s_check_old = false;  // found something below the running build
 static char          s_check_pub[24] = "";  // when that release was published
+static bool          s_check_big = false;   // newer, but larger than this device's slot
 
 // How far the GitHub download has got. Read by /api/ota/progress, which is the
 // only route answered while an image is being written.
@@ -140,7 +142,28 @@ static String body() {
   // What is running, and where it came from. The version alone was already at
   // the top of every page; which channel it belongs to and when it landed are
   // the parts nothing could answer.
-  h += F("<div class='grid'><div class='card wide'><h2>");
+  h += F("<div class='grid'>");
+  // The old partition table: what it means and the way out, before anything
+  // else on the page (Nikolai, 26.09.2026). Only once the public flasher
+  // carries the current table - see FLASHER_HAS_CURRENT_LAYOUT.
+  const PartitionLayout& pl = partitionLayout();
+  if (!pl.current && FLASHER_HAS_CURRENT_LAYOUT) {
+    char text[640];
+    const char* too_big = partitionTooBigVersion();
+    if (too_big[0]) snprintf(text, sizeof(text), T(STR_PART_HINT_BLOCKED), too_big);
+    else            copyT(text, sizeof(text), STR_PART_HINT_TEXT);
+    h += F("<div class='card wide' style='border-color:var(--warn)'><h2>");
+    h += T(STR_PART_HINT_TITLE);
+    h += F("</h2><p style='white-space:pre-line;line-height:1.6;color:var(--ink-2);margin:0 0 14px'>");
+    h += htmlEsc(text);
+    // Only here, where there is room: the display keeps the short version.
+    h += F("</p><p class='hint' style='margin:0 0 14px'>");
+    h += htmlEsc(T(STR_PART_HINT_ERASE));
+    h += F("</p><a href='" FLASHER_URL "' target='_blank' rel='noopener' style='color:var(--accent);font-weight:600'>");
+    h += T(STR_PART_HINT_QR);
+    h += F(" &#8599;</a></div>");
+  }
+  h += F("<div class='card wide'><h2>");
   h += T(STR_W_C_FIRMWARE);
   h += F("</h2><div class='rows' style='margin-bottom:16px'>"
          "<div class='row'><span class='k'>");
@@ -166,7 +189,7 @@ static String body() {
   h += T(STR_W_FW_NOTES);
   h += F("</button>"
          "<pre id='fwn' class='notes'></pre>"
-         "<form method='POST' action='/update' enctype='multipart/form-data'"
+         "<form id='fwform' method='POST' action='/update' enctype='multipart/form-data'"
          " style='margin-top:18px'>"
          "<div class='field'><label>");
   h += T(STR_W_FW_FILE);
@@ -185,7 +208,7 @@ static String body() {
   h += T(STR_W_FW_FLASH);
   h += F("</button></div><span class='hint'>");
   h += T(STR_W_FW_HINT);
-  h += F("</span></div></form></div>");
+  h += F("</span><span class='msg' id='fwmsg'></span></div></form></div>");
 
   // The same check the device screen offers, for anyone who is not standing
   // in front of the scale. The channel is the one setting behind both, so the
@@ -243,6 +266,10 @@ static String body() {
 
   h += F("<script>const INSTALLED=");
   h += jsStr(FW_VERSION);
+  // The app slot, so a file that cannot fit is turned away before a byte of
+  // it travels.
+  h += F(",SLOT=");
+  h += String((unsigned long)partitionLayout().app_slot_bytes);
   h += F(",G={check:");
   h += jsStr(T(STR_W_FW_CHECK));
   h += F(",checking:");   h += jsStr(T(STR_W_FW_CHECKING));
@@ -267,6 +294,11 @@ static String body() {
   h += F(",older:");      h += jsStr(T(STR_W_FW_OLDER));
   h += F(",downgrade:");  h += jsStr(T(STR_W_FW_DOWNGRADE));
   h += F(",downwarn:");   h += jsStr(T(STR_W_FW_DOWNWARN));
+  h += F(",uploading:");  h += jsStr(T(STR_W_FW_UPLOADING));
+  h += F(",restarting:"); h += jsStr(T(STR_W_FW_RESTARTING));
+  h += F(",upfail:");     h += jsStr(T(STR_W_FW_FAIL));
+  h += F(",toobig:");     h += jsStr(T(STR_W_FW_TOOBIG));
+  h += F(",ghbig:");      h += jsStr(T(STR_GH_OTA_TOO_BIG));
   h += F("};"
          "function ghSay(t,bad){var m=document.getElementById('ghmsg');"
          "m.className=bad?'msg bad':'msg';m.textContent=t;}"
@@ -316,8 +348,41 @@ static String body() {
          "n.textContent=G.reboots;rc.appendChild(n);}"
          "function mb(n){return n>=1048576?(n/1048576).toFixed(2)+' MB'"
          ":(n/1024).toFixed(0)+' KB';}"
+         // The upload as a request of its own rather than a form post, so the
+         // bytes can be counted on the way out, and then the same wait for the
+         // device to come back that the GitHub install has (Nikolai, 26.09.2026).
+         "function fwSay(t){var m=document.getElementById('fwmsg');m.className='msg bad';m.textContent=t;}"
+         "function fwUpload(e){e.preventDefault();"
+         "var inp=document.querySelector('#fwform input[type=file]'),f=inp&&inp.files[0];if(!f)return;"
+         "if(SLOT&&f.size>SLOT){fwSay(G.toobig.replace('{s}',mb(SLOT)));return;}"
+         "rModal(false,G.uploading,G.keep);"
+         "var s=document.getElementById('rsec'),bar=document.getElementById('rbar'),"
+         "bi=document.getElementById('rbari'),sent=false;bar.style.display='block';"
+         "var fd=new FormData();fd.append('firmware',f,f.name);"
+         "var x=new XMLHttpRequest();x.open('POST','/update');"
+         "x.upload.onprogress=function(ev){if(!ev.lengthComputable)return;"
+         "var p=Math.round(ev.loaded*100/ev.total);bi.style.width=p+'%';"
+         "s.textContent=mb(ev.loaded)+' / '+mb(ev.total)+' - '+p+' %';if(p>=100)sent=true;};"
+         "x.onload=function(){if(x.status===200&&x.responseText.indexOf('&#10003;')>=0)fwBack();"
+         "else{document.getElementById('rbox').style.display='none';fwSay(G.upfail);}};"
+         // A drop after the last byte is the restart overtaking the reply.
+         "x.onerror=function(){if(sent)fwBack();"
+         "else{document.getElementById('rbox').style.display='none';fwSay(G.upfail);}};"
+         "x.send(fd);}"
+         // Back once /status.json answers again - after it was seen gone, or
+         // after long enough that a missed gap cannot reload the old build.
+         "function fwBack(){document.getElementById('rtitle').textContent=G.restarting;"
+         "var s=document.getElementById('rsec'),t=0,down=false;"
+         "document.getElementById('rbari').style.width='100%';"
+         "var iv=setInterval(function(){t++;s.textContent=G.restarting+' '+t+'s';"
+         "if(t>180){clearInterval(iv);"
+         "s.innerHTML=RT.gone+\" <a href='' style='color:var(--accent)'>\"+RT.reload+'</a>';return;}"
+         "fetch('/status.json',{cache:'no-store'}).then(function(r){"
+         "if(r.ok&&(down||t>20)){clearInterval(iv);location.reload();}})"
+         ".catch(function(){down=true;});},1000);}"
          "function fwInit(){"
          "rInit();"
+         "var ff=document.getElementById('fwform');if(ff)ff.addEventListener('submit',fwUpload);"
          "var e=document.getElementById('fwsince'),t=parseInt(e.dataset.t||'0');"
          "e.textContent=t?new Date(t*1000).toLocaleString():G.unknown;"
          "fwInst(0);}"
@@ -373,7 +438,8 @@ static String body() {
          // A different tag than whatever the notes pane last showed.
          "LATEST=null;document.getElementById('ghn').style.display='none';"
          "n.textContent=G.whatsnew;"
-         "ghSay(d.update?G.avail:(d.older?G.older:G.uptodate),false);"
+         "if(d.toobig){ghSay(G.ghbig.replace('%s',d.tag),true);}"
+         "else ghSay(d.update?G.avail:(d.older?G.older:G.uptodate),false);"
          "}).catch(()=>{if(!auto)ghSay(G.fail,true);})"
          ".finally(()=>{if(!again){b.disabled=false;b.textContent=G.check;}});}"
          "var LATEST=null,OLDER=false;"
@@ -500,7 +566,8 @@ static void routes(WebServer &srv) {
                "\",\"installed\":\"" + jsonEsc(FW_VERSION) +
                "\",\"published\":\"" + jsonEsc(s_check_pub) +
                "\",\"update\":" + (s_check_new ? "true" : "false") +
-               ",\"older\":" + (s_check_old ? "true" : "false") + "}");
+               ",\"older\":" + (s_check_old ? "true" : "false") +
+               ",\"toobig\":" + (s_check_big ? "true" : "false") + "}");
       return;
     }
 
@@ -559,13 +626,18 @@ static void ghCheckFinish(WebServer &srv) {
   char tag[40], pub[24];
   strncpy(tag, r.tag, sizeof(tag) - 1); tag[sizeof(tag) - 1] = '\0';
   strncpy(pub, r.pub, sizeof(pub) - 1); pub[sizeof(pub) - 1] = '\0';
+  const uint32_t image_size = r.image_size;
   webJobTake();
 
   {
     strncpy(gh_latest_version, tag, sizeof(gh_latest_version) - 1);
     gh_latest_version[sizeof(gh_latest_version) - 1] = '\0';
     const uint64_t remote = parseVersion(tag), running = parseVersion(FW_VERSION);
-    const bool newer = remote > running;
+    // Newer but larger than this device's slot: not offered, the way to the
+    // flasher instead - the same rule as the device's own check.
+    const bool too_big = remote > running && !partitionImageFits(image_size);
+    if (too_big) partitionNoteTooBig(tag, image_size);
+    const bool newer = remote > running && !too_big;
     // Offered, not pushed. Someone who tested a pre-release and moved the
     // channel back is asking for the release below the running build, and the
     // page has to be able to say so rather than only "already up to date".
@@ -585,6 +657,7 @@ static void ghCheckFinish(WebServer &srv) {
     s_check_pre = gh_prerelease;
     s_check_new = newer;
     s_check_old = older;
+    s_check_big = too_big;
     snprintf(s_check_pub, sizeof(s_check_pub), "%s", pub);
     logSDf("OTA check: web asked, latest %s%s", tag,
            newer ? " (newer)" : (older ? " (older)" : ""));
@@ -593,7 +666,8 @@ static void ghCheckFinish(WebServer &srv) {
              "\",\"installed\":\"" + jsonEsc(FW_VERSION) +
              "\",\"published\":\"" + jsonEsc(pub) +
              "\",\"update\":" + (newer ? "true" : "false") +
-             ",\"older\":" + (older ? "true" : "false") + "}");
+             ",\"older\":" + (older ? "true" : "false") +
+             ",\"toobig\":" + (too_big ? "true" : "false") + "}");
   }
 }
 
@@ -613,6 +687,12 @@ static void routesTail(WebServer &srv) {
     }
     if (gh_latest_version[0] == '\0') {
       srv.send(200, "application/json", "{\"ok\":false,\"error\":\"nocheck\"}");
+      return;
+    }
+    // A release a check found too large for the slot - this page's or the
+    // device's - is refused here too, not only left without a button.
+    if (s_check_big || partitionTagTooBig(gh_latest_version)) {
+      srv.send(200, "application/json", "{\"ok\":false,\"error\":\"toobig\"}");
       return;
     }
     strncpy(gh_web_flash_tag, gh_latest_version, sizeof(gh_web_flash_tag) - 1);
@@ -705,6 +785,10 @@ static void routesTail(WebServer &srv) {
                            ? (uint32_t)srv.clientContentLength() : 0;
         ota_upload_done  = 0;
         ota_last_paint   = 0;
+        // The whole screen says it, whatever screen was up: the upload holds
+        // the loop, touch included, and a frozen home screen for two minutes
+        // looked like a hung device (Nikolai, 26.09.2026).
+        otaGithubOverlayShow();
         if (lbl_ota_status) lv_label_set_text(lbl_ota_status,
           T(STR_OTA_UPLOADING));
         lv_timer_handler();
@@ -722,6 +806,7 @@ static void routesTail(WebServer &srv) {
         ota_upload_active = false;
         ota_upload_done   = 0;
         ota_upload_total  = 0;
+        otaGithubOverlayHide();
         logSD("OTA: upload aborted by the client");
         if (lbl_ota_status) lv_label_set_text(lbl_ota_status, T(STR_OTA_FAIL));
       } else if (upload.status == UPLOAD_FILE_WRITE) {
@@ -731,18 +816,22 @@ static void routesTail(WebServer &srv) {
           Update.abort();
           ota_upload_active = false;
           failed = true;
+          otaGithubOverlayHide();
           if (lbl_ota_status) lv_label_set_text(lbl_ota_status, T(STR_OTA_FAIL));
           return;
         }
         ota_upload_done += upload.currentSize;
         // Same cadence as the GitHub path. Painting per chunk would cost more
         // than the write does.
-        if (lbl_ota_status && millis() - ota_last_paint >= OTA_PROGRESS_MS) {
+        if (millis() - ota_last_paint >= OTA_PROGRESS_MS) {
           ota_last_paint = millis();
-          char line[48];
-          otaProgressLine(line, sizeof(line), ota_upload_done, ota_upload_total);
-          lv_label_set_text(lbl_ota_status, line);
-          lv_refr_now(NULL);
+          otaGithubOverlayProgress(ota_upload_done, ota_upload_total);
+          if (lbl_ota_status) {
+            char line[48];
+            otaProgressLine(line, sizeof(line), ota_upload_done, ota_upload_total);
+            lv_label_set_text(lbl_ota_status, line);
+            lv_refr_now(NULL);
+          }
         }
       } else if (upload.status == UPLOAD_FILE_END) {
         ota_upload_active = false;
@@ -753,6 +842,7 @@ static void routesTail(WebServer &srv) {
         if (s_upload_ok) {
           logSDf("OTA: browser upload complete, %u bytes", (unsigned)upload.totalSize);
         } else {
+          otaGithubOverlayHide();
           logSDf("OTA: end() failed after %u bytes, error %u",
                  (unsigned)upload.totalSize, (unsigned)Update.getError());
         }

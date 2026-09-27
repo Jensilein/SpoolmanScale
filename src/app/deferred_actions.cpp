@@ -18,6 +18,7 @@ bool show_filaman_options_pending = false;
 bool show_ams_assign_pending = false;
 bool show_ams_view_pending = false;
 bool show_ams_view_scale_pending = false;
+bool show_tag_view_pending = false;
 bool show_filaman_fields_pending = false;
 bool show_bambuddy_options_pending = false;
 bool show_bambuddy_dried_pending = false;
@@ -49,3 +50,19 @@ float bb_cap_label_g      = 0.0f;
 
 bool i2c_rescan_pending = false;
 bool cal_now_pending    = false;
+
+bool show_wifi_menu_pending     = false;
+bool show_bluetooth_pending     = false;
+bool bluetooth_rebuild_pending  = false;
+bool ble_scan_pending           = false;
+bool show_ble_devices_pending   = false;
+int  ble_card_pending           = -1;
+bool ble_card_close_pending     = false;
+int  ble_card_set_printer_pending    = -1;
+bool ble_card_forget_printer_pending = false;
+bool show_printer_pending        = false;
+bool printer_cycle_model_pending = false;
+bool printer_cycle_media_pending = false;
+bool printer_test_pending        = false;
+bool printer_forget_pending      = false;
+bool print_spool_label_pending   = false;

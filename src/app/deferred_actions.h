@@ -38,6 +38,9 @@ extern bool show_ams_assign_pending;
 extern bool show_ams_view_pending;
 // The same page opened from Settings > Scale, which is where it goes back to.
 extern bool show_ams_view_scale_pending;
+// The tag view, from the NFC chip in the header. A flag like the AMS view's,
+// so the card is built on the loop and never inside the chip's callback.
+extern bool show_tag_view_pending;
 extern bool show_filaman_fields_pending;
 extern bool show_bambuddy_options_pending;
 extern bool show_bambuddy_dried_pending;
@@ -62,6 +65,8 @@ extern bool show_tag_field_pending;
 // "create the field" and has to do exactly that.
 extern bool create_tag_field_pending;
 extern bool show_spoolman_pending;
+// Back to the Connection screen, rebuilt: from the Spoolman screen, and from
+// the WiFi menu and the Bluetooth screen, whose tiles it has to redraw.
 extern bool show_connection_from_spoolman_pending;
 extern bool show_system_pending;
 extern bool show_ota_pending;
@@ -108,3 +113,37 @@ extern bool i2c_rescan_pending;
 // a fixed order - leave the setup, then open the calibration - so it cannot be
 // expressed with show_factor_pending alone.
 extern bool cal_now_pending;
+
+// The WiFi menu behind the Connection tile, and the way back into it from
+// the WiFi setup and status screens: built on the loop, never from inside
+// the callback of the screen it replaces.
+extern bool show_wifi_menu_pending;
+// The Bluetooth screen behind its Connection tile.
+extern bool show_bluetooth_pending;
+// The Bluetooth switch was flipped or a scan finished: the screen is rebuilt
+// to show it, which deletes the row the tap landed on - so not from there.
+extern bool bluetooth_rebuild_pending;
+// A device scan. It starts the BLE stack and blocks for seconds: loop only.
+extern bool ble_scan_pending;
+// The device list behind the Bluetooth screen's row.
+extern bool show_ble_devices_pending;
+// A device row was tapped: the index of the card to build, -1 for none. The
+// card is a popup over the list and is built on the loop like every popup.
+extern int  ble_card_pending;
+// The card's Close button: the card goes on the next pass, not from inside
+// the callback of the button that sits on it.
+extern bool ble_card_close_pending;
+// The card's action: make this device the label printer (index), or drop
+// the printer. Both write NVS and rebuild the list, so from the loop.
+extern int  ble_card_set_printer_pending;
+extern bool ble_card_forget_printer_pending;
+// The printer screen behind the Bluetooth screen's row, and its rows: each
+// change is saved and the screen rebuilt, the test print blocks for seconds.
+extern bool show_printer_pending;
+extern bool printer_cycle_model_pending;
+extern bool printer_cycle_media_pending;
+extern bool printer_test_pending;
+extern bool printer_forget_pending;
+// The label of the spool on the pad, from the More info header. Rendered
+// and printed from the loop: the print starts the BLE stack and blocks.
+extern bool print_spool_label_pending;

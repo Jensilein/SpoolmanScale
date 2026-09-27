@@ -1,6 +1,7 @@
 #include "more_info_screen.h"
 #include "navigation.h"
 #include "app/app_state.h"
+#include "app/deferred_actions.h"
 #include "services/tag_field.h"
 
 #include <Arduino.h>
@@ -17,14 +18,21 @@
 #include "services/user_options.h"
 #include "services/backend.h"
 #include "services/breadcrumb.h"
+#include "services/http_progress.h"
 #include "services/backend_api.h"
+#include "services/ble_service.h"
+#include "services/label_printer.h"
+#include "services/server_reach.h"
 #include "services/filaman_api.h"
 #include "services/wifi_manager.h"
+#include "services/spool_cache.h"
 #include "lang.h"
 #include "confirm_popup.h"
 #include "status_picker.h"
 #include "tag_display.h"
+#include "ui/main_screen_helpers.h"
 #include "ui/tag_write_popup.h"
+#include "ui/theme.h"
 #include "ui_common.h"
 
 
@@ -103,7 +111,9 @@ static void runUnlink() {
     // would otherwise find the spool on the very next scan and the migration
     // would write rfid_uid back, so an unlink that looked done did not hold.
     // Only what this scale itself writes is taken back, see the function.
-    if (backendIsFilaMan()) {
+    // Not after a request that found no server: this one would only wait out
+    // the same timeout again.
+    if (backendIsFilaMan() && !tagBindingFailedOnNetwork()) {
       char chip[24];
       tagUidNormalize(g_tag.uid_str, chip, sizeof(chip));
       filamanUnlinkBambuFields(backendBaseUrl(), filamanApiKey(), spool_id, chip);
@@ -111,6 +121,23 @@ static void runUnlink() {
     logSDf("Unlink spool ID=%d", spool_id);
   }
   Serial.printf("Unlink spool ID=%d all=%d\n", spool_id, all ? 1 : 0);
+
+  // An unlink that never reached the server leaves the spool bound, so the
+  // screen keeps it and says so. Reported as done, it cleared the display and
+  // offered to erase the tag while the server still held the binding - and the
+  // next scan found the spool again, which read as the unlink not working.
+  if (tagBindingFailedOnNetwork()) {
+    logSDf("UNLINK ABORT: spool %d not reached, binding kept", spool_id);
+    if (scr_more_info) { lv_obj_del(scr_more_info); scr_more_info = nullptr; }
+    showMainScreen();
+    statusMessageShow(T(STR_UNLINK_NO_CONNECTION), UI_COL_BAD_TEXT);
+    return;
+  }
+
+  // The kept spool list still has the spool as bound and would leave it out.
+  // Free is the safe way to be wrong: if another tag still binds it, the row
+  // is read again when it is tapped, and that puts it right.
+  spoolCacheSetBound(spool_id, false);
 
   // The binding is gone, but the tag on the reader still carries the spool
   // data - the next reader to see it would still name a spool this one no
@@ -127,12 +154,53 @@ static void runUnlink() {
 static lv_obj_t *loc_list_obj = nullptr;
 static lv_obj_t *loc_status_obj = nullptr;
 
+// A picker that opened by itself after a spool was lifted has a Cancel at the
+// bottom that drains over PICK_COUNTDOWN_MS, and closes as if it was pressed.
+// Opened from More Info it waits: somebody asked for it. The clock restarts
+// when the list has loaded and whenever it is scrolled, and does not count
+// the time a blocking fetch held the loop.
+#define LOC_CANCEL_H    44
+#define LOC_CANCEL_GAP  8
+#define LOC_CANCEL_W    380
+#define LOC_FILL_W      (LOC_CANCEL_W - 2)   // inside the button's 1 px border
+#define LOC_FILL_H      (LOC_CANCEL_H - 2)
+static lv_obj_t     *loc_cancel_fill   = nullptr;
+static lv_coord_t    loc_cancel_fill_w = -1;
+static unsigned long loc_count_ms      = 0;
+static uint32_t      loc_count_stall   = 0;
+
+static void locCountRestart() {
+  loc_count_ms    = millis();
+  loc_count_stall = httpStallTotalMs();
+}
+
+// Returns true when the picker ran out and was asked to close.
+static bool locCountTick() {
+  if (!loc_cancel_fill || !scr_location_picker) return false;
+  if (loc_cancel_pending || loc_patch_pending) return false;
+  unsigned long elapsed = millis() - loc_count_ms;
+  const uint32_t stalled = httpStallTotalMs() - loc_count_stall;
+  elapsed = (stalled >= elapsed) ? 0 : (elapsed - stalled);
+  const unsigned long rem = (elapsed >= PICK_COUNTDOWN_MS) ? 0 : PICK_COUNTDOWN_MS - elapsed;
+  const lv_coord_t w = (lv_coord_t)((uint64_t)LOC_FILL_W * rem / PICK_COUNTDOWN_MS);
+  if (w != loc_cancel_fill_w) {
+    loc_cancel_fill_w = w;
+    lv_obj_set_width(loc_cancel_fill, w);
+  }
+  if (rem > 0) return false;
+  logSDf("LOC: no location chosen in %lus, closed as Cancel id=%d",
+         (unsigned long)(PICK_COUNTDOWN_MS / 1000), sm_id);
+  loc_cancel_pending = true;
+  return true;
+}
+
 void requestLocationPicker(bool from_popup) {
   g_loc_picker_from_popup = from_popup;
   show_location_picker_pending = true;
 }
 
 void handleMoreInfoDeferredActions() {
+  locCountTick();
   if (unlink_pending) {
     unlink_pending = false;
     runUnlink();
@@ -148,8 +216,8 @@ void handleMoreInfoDeferredActions() {
     closeLocationPicker();
     if (sm_id > 0) {
       const bool clear = (loc_patch_name[0] == '\0');
-      const int code = backendPatchSpoolLocation(cfg_spoolman_base, sm_id,
-                                                 clear ? nullptr : loc_patch_name, 8000);
+      const int code = serverReachNote(backendPatchSpoolLocation(cfg_spoolman_base, sm_id,
+                                                 clear ? nullptr : loc_patch_name, 8000), true);
       if (code == 200) {
         if (clear) {
           sm_location_id = 0;
@@ -177,6 +245,8 @@ void handleMoreInfoDeferredActions() {
   if (fetch_locations_pending) {
     fetch_locations_pending = false;
     fetchAndFillLocationList();
+    // The list stands to be chosen from once it is drawn.
+    locCountRestart();
   }
   if (show_more_info_pending) {
     show_more_info_pending = false;
@@ -207,8 +277,9 @@ void handleMoreInfoDeferredActions() {
 void hideMoreInfoOverlays() {
   releaseScreen(&scr_location_picker);
   closeStatusPicker();
-  loc_status_obj = nullptr;
-  loc_list_obj   = nullptr;
+  loc_status_obj  = nullptr;
+  loc_list_obj    = nullptr;
+  loc_cancel_fill = nullptr;
 }
 
 // The picker and the two labels inside it, always together. The three buttons
@@ -219,8 +290,9 @@ void hideMoreInfoOverlays() {
 // that on the way through.
 static void closeLocationPicker() {
   if (scr_location_picker) { lv_obj_del(scr_location_picker); scr_location_picker = nullptr; }
-  loc_status_obj = nullptr;
-  loc_list_obj   = nullptr;
+  loc_status_obj  = nullptr;
+  loc_list_obj    = nullptr;
+  loc_cancel_fill = nullptr;
 }
 
 // ============================================================
@@ -334,9 +406,10 @@ void showLocationPicker() {
   lv_obj_set_style_text_font(lbl_loc_status, &lv_font_montserrat_ext_16, 0);
   lv_obj_align(lbl_loc_status, LV_ALIGN_CENTER, 0, 10);
 
-  // Scrollable list container
+  // Scrollable list container, shorter by the Cancel row when there is one.
+  const bool with_cancel = g_loc_picker_from_popup;
   lv_obj_t *list = lv_obj_create(box);
-  lv_obj_set_size(list, 380, 220);
+  lv_obj_set_size(list, 380, with_cancel ? 220 - LOC_CANCEL_H - LOC_CANCEL_GAP : 220);
   lv_obj_set_pos(list, 10, 50);
   lv_obj_set_style_bg_color(list, lv_color_hex(0x0b1525), 0);
   lv_obj_set_style_border_width(list, 0, 0);
@@ -345,6 +418,44 @@ void showLocationPicker() {
   lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_scroll_dir(list, LV_DIR_VER);
   lv_obj_add_flag(list, LV_OBJ_FLAG_HIDDEN);
+
+  if (with_cancel) {
+    // Scrolling is reading: the clock starts again rather than closing the
+    // list under a finger that is still looking for the right shelf.
+    lv_obj_add_event_cb(list, [](lv_event_t *e) { locCountRestart(); },
+                        LV_EVENT_SCROLL_BEGIN, NULL);
+
+    lv_obj_t *btn_c = lv_btn_create(box);
+    lv_obj_set_size(btn_c, LOC_CANCEL_W, LOC_CANCEL_H);
+    lv_obj_set_pos(btn_c, 10, 270 - LOC_CANCEL_H);
+    lv_obj_set_style_bg_color(btn_c, lv_color_hex(UI_COL_SURFACE_2), 0);
+    lv_obj_set_style_bg_color(btn_c, lv_color_hex(UI_COL_LINE), LV_STATE_PRESSED);
+    lv_obj_set_style_border_width(btn_c, 1, 0);
+    lv_obj_set_style_border_color(btn_c, lv_color_hex(UI_COL_LINE), 0);
+    lv_obj_set_style_radius(btn_c, UI_RADIUS_BTN, 0);
+    lv_obj_set_style_shadow_width(btn_c, 0, 0);
+    lv_obj_set_style_pad_all(btn_c, 0, 0);
+    lv_obj_add_event_cb(btn_c, [](lv_event_t *e) {
+      // Parked like the X, for the same reason.
+      loc_cancel_pending = true;
+    }, LV_EVENT_CLICKED, NULL);
+    // Behind the label and not clickable, so the tap still lands on the button.
+    loc_cancel_fill = lv_obj_create(btn_c);
+    lv_obj_remove_style_all(loc_cancel_fill);
+    lv_obj_set_size(loc_cancel_fill, LOC_FILL_W, LOC_FILL_H);
+    lv_obj_set_pos(loc_cancel_fill, 0, 0);
+    lv_obj_set_style_bg_color(loc_cancel_fill, lv_color_hex(UI_COL_LINE), 0);
+    lv_obj_set_style_bg_opa(loc_cancel_fill, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(loc_cancel_fill, UI_RADIUS_BTN, 0);
+    lv_obj_clear_flag(loc_cancel_fill, LV_OBJ_FLAG_CLICKABLE);
+    loc_cancel_fill_w = LOC_FILL_W;
+    lv_obj_t *lbl_c = lv_label_create(btn_c);
+    lv_label_set_text(lbl_c, T(STR_CANCEL));
+    lv_obj_set_style_text_color(lbl_c, lv_color_hex(UI_COL_INK_2), 0);
+    lv_obj_set_style_text_font(lbl_c, UI_FONT_BODY, 0);
+    lv_obj_center(lbl_c);
+    locCountRestart();
+  }
 
   // Store refs for async fetch
   loc_status_obj = lbl_loc_status;
@@ -385,7 +496,7 @@ void fetchAndFillLocationList() {
   logSDf("LOC: GET locations from %s", backendBaseUrl());
   JsonDocument doc;
   DeserializationError err = DeserializationError::Ok;
-  int code = backendGetLocationsJson(cfg_spoolman_base, doc, 8000, &err);
+  int code = serverReachNote(backendGetLocationsJson(cfg_spoolman_base, doc, 8000, &err), true);
   logSDf("LOC: HTTP code=%d", code);
   if (code != 200) {
     char buf[48];
@@ -544,7 +655,7 @@ static void applyPickedStatus(int status_id) {
   if (!key || sm_id <= 0) return;
   if (!wifiManagerIsConnected()) return;
 
-  int code = backendSetSpoolStatus(cfg_spoolman_base, sm_id, key, 5000);
+  int code = serverReachNote(backendSetSpoolStatus(cfg_spoolman_base, sm_id, key, 5000), true);
   logSDf("status: spool %d -> %s HTTP %d", sm_id, key, code);
   if (code == 200) sm_status_id = status_id;
   // Rebuilt either way. On failure the chip goes back to showing the truth.
@@ -626,6 +737,30 @@ void buildMoreInfoScreen() {
     });
   }
 
+  // Print label, left of the X. Only when it can do anything: Bluetooth on,
+  // a printer picked, a spool the backend knows. The print itself runs from
+  // the loop; it starts the BLE stack and blocks for seconds.
+  if (bleEnabled() && labelPrinterConfigured(labelPrinterLoadConfig()) && sm_found && sm_id > 0) {
+    lv_obj_t *btn_print = lv_btn_create(hdr);
+    lv_obj_set_size(btn_print, 116, 34);
+    lv_obj_set_pos(btn_print, 282, 9);
+    lv_obj_set_style_bg_color(btn_print, lv_color_hex(UI_COL_ROW), 0);
+    lv_obj_set_style_bg_color(btn_print, lv_color_hex(UI_COL_ROW_PRESSED), LV_STATE_PRESSED);
+    lv_obj_set_style_border_color(btn_print, lv_color_hex(UI_COL_ACCENT), 0);
+    lv_obj_set_style_border_width(btn_print, 1, 0);
+    lv_obj_set_style_radius(btn_print, UI_RADIUS_BTN, 0);
+    lv_obj_set_style_shadow_width(btn_print, 0, 0);
+    lv_obj_add_event_cb(btn_print, [](lv_event_t *e) {
+      logSD("BTN: MoreInfo -> print label");
+      print_spool_label_pending = true;
+    }, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_print = lv_label_create(btn_print);
+    lv_label_set_text(lbl_print, T(STR_PRN_LABEL_PRINT));
+    lv_obj_set_style_text_color(lbl_print, lv_color_hex(UI_COL_ACCENT), 0);
+    lv_obj_set_style_text_font(lbl_print, UI_FONT_SMALL, 0);
+    lv_obj_center(lbl_print);
+  }
+
   // Close X button - Fix 10: 44x44px proper size
   lv_obj_t *btn_x = lv_btn_create(hdr);
   lv_obj_set_size(btn_x, 44, 44);
@@ -672,11 +807,12 @@ void buildMoreInfoScreen() {
   lv_obj_set_style_border_width(swatch, 1, 0);
   lv_obj_set_style_pad_all(swatch, 0, 0);
   lv_obj_clear_flag(swatch, LV_OBJ_FLAG_SCROLLABLE);
-  // Swatch color: prefer tag color (Bambu), fall back to Spoolman color (NTAG)
-  const char* swatch_hex = (strlen(g_tag.color_hex) == 7) ? g_tag.color_hex :
-                           (strlen(sm_color_global) >= 6 ? sm_color_global : nullptr);
-  // swatchColorFromHex() handles the nullptr and malformed cases itself
-  lv_obj_set_style_bg_color(swatch, swatchColorFromHex(swatch_hex), 0);
+  // The same colour the home screen shows: the tag's where it names one, the
+  // server's where it does not. An NTAG has no tag colour here, so the server
+  // decides alone.
+  SpoolColor server_color;
+  spoolColorParse(sm_color_global, &server_color);
+  swatchPaint(swatch, spoolColorResolve(g_tag.color, server_color));
 
   // SM-ID value
   lv_obj_t *lbl_id = lv_label_create(box);
@@ -698,7 +834,7 @@ void buildMoreInfoScreen() {
 
   // Cap: Material
   lv_obj_t *mi_mat_cap = lv_label_create(box);
-  lv_label_set_text(mi_mat_cap, "Material");
+  lv_label_set_text(mi_mat_cap, T(STR_LBL_MATERIAL));
   lv_obj_set_style_text_color(mi_mat_cap, lv_color_hex(0x4a6fa0), 0);
   lv_obj_set_style_text_font(mi_mat_cap, &lv_font_montserrat_ext_12, 0);
   lv_obj_set_pos(mi_mat_cap, 114, 60);
@@ -760,9 +896,13 @@ void buildMoreInfoScreen() {
   lv_obj_set_style_text_font(c1, &lv_font_montserrat_ext_12, 0);
   lv_obj_set_pos(c1, CA, R1);
   lv_obj_t *v1 = lv_label_create(box);
-  const char* color_display = (strlen(g_tag.color_hex) > 1) ? g_tag.color_hex :
-                              (strlen(sm_color_global) > 1 ? sm_color_global : "-");
-  lv_label_set_text(v1, color_display);
+  // What the tag holds, alpha included - "#00000000" is how Bambu writes a
+  // clear filament, and showing it explains the swatch. The server's value
+  // where there is no tag colour.
+  char color_display[SPOOL_COLOR_HEX_MAX];
+  spoolColorFormat(g_tag.color.valid ? g_tag.color : server_color,
+                   color_display, sizeof(color_display));
+  lv_label_set_text(v1, color_display[0] ? color_display : "-");
   lv_obj_set_style_text_color(v1, lv_color_hex(0x8ab0d8), 0);
   lv_obj_set_style_text_font(v1, &lv_font_montserrat_ext_18, 0);
   lv_obj_set_pos(v1, CA, R1 + VF);
@@ -889,7 +1029,7 @@ void buildMoreInfoScreen() {
 
   // Spoolman UUID left, unlink right - both ending on y=290
   lv_obj_t *c_uuid = lv_label_create(box);
-  { char ub[32]; snprintf(ub, sizeof(ub), "%s UUID", backendName()); lv_label_set_text(c_uuid, ub); }
+  { char ub[32]; snprintf(ub, sizeof(ub), T(STR_BACKEND_UUID), backendName()); lv_label_set_text(c_uuid, ub); }
   lv_obj_set_style_text_color(c_uuid, lv_color_hex(0x4a6fa0), 0);
   lv_obj_set_style_text_font(c_uuid, &lv_font_montserrat_ext_12, 0);
   lv_obj_set_pos(c_uuid, CA, R4);

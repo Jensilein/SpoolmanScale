@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
+#include <WiFi.h>
 #include <math.h>
 #include <string.h>
 
@@ -10,6 +11,8 @@
 #include "services/user_options.h"
 #include "services/backend.h"
 #include "services/http_progress.h"
+#include "services/loop_task.h"
+#include "services/spool_color.h"
 #include "services/tag_uid.h"
 #include "services/text_util.h"
 
@@ -53,8 +56,17 @@ struct SpiRamAllocator : ArduinoJson::Allocator {
 // Whether the last inventory fetch stopped short - the timeout or the page
 // cap - so a caller that did not find a tag in it can say "unknown" rather
 // than "not there". Read through filamanLastListPartial().
-static bool s_last_list_partial = false;
-bool filamanLastListPartial() { return s_last_list_partial; }
+//
+// One flag per side: the loop task, and whichever worker is loading a list on
+// the other core (backend_job.cpp, the tags page's web job). The two can run
+// at the same time, and with a single flag the one that finished last would
+// decide for both whether a list was whole.
+static bool s_last_list_partial_loop  = false;
+static bool s_last_list_partial_other = false;
+static bool& lastListPartial() {
+  return onLoopTask() ? s_last_list_partial_loop : s_last_list_partial_other;
+}
+bool filamanLastListPartial() { return lastListPartial(); }
 
 // What goes into a query string. The Spoolman client has the same helper;
 // the search term here is whatever a tag carried, and a '&' or a '#' in it
@@ -136,6 +148,10 @@ static bool fetchLocations(const char* base_url, const char* api_key, bool force
   if (!hasBaseUrl(base_url)) return false;
   if (!force && s_loc_count > 0 &&
       (millis() - s_loc_fetched_ms) < FILAMAN_LOC_TTL_MS) return true;
+  // A worker loading the inventory on the other core keeps the names it
+  // finds, however old: refilling the table under the loop, which reads it
+  // for the location popup, would hand it half a list. The loop refreshes it.
+  if (!force && s_loc_count > 0 && !onLoopTask()) return true;
 
   HTTPClient http;
   http.begin(String(base_url) + "/api/v1/locations?page_size=" + FILAMAN_LOC_MAX);
@@ -258,6 +274,10 @@ static void mapSpool(JsonObjectConst src, JsonObject dst) {
   // It reflects real consumption, tracked through its printer integration.
   const char* last_used = src["last_used_at"] | (const char*)nullptr;
   if (last_used) dst["last_used"] = last_used;
+  // The day the spool was added, under Spoolman's name for it: the label
+  // prints it when there is no first use, which FilaMan does not record.
+  const char* created = src["created_at"] | (const char*)nullptr;
+  if (created) dst["registered"] = created;
 
   // Spoolman carries the location as a plain string, FilaMan as an id.
   // Resolved from the cache; if it is cold the field stays unset and the UI
@@ -432,6 +452,9 @@ int filamanRegisterDevice(const char* base_url, const char* device_code,
 int filamanHeartbeat(const char* base_url, const char* device_token,
                      const char* ip_address, uint32_t timeout_ms) {
   if (!hasBaseUrl(base_url) || !device_token || !device_token[0]) return -1;
+  // appLoop() calls this directly, past the dispatcher and its brackets, and
+  // it runs once a minute on the loop task.
+  HttpStallTime stall(__func__);
 
   HTTPClient http;
   http.begin(String(base_url) + "/api/v1/devices/heartbeat");
@@ -578,6 +601,42 @@ int filamanCountActiveSpools(const char* base_url, const char* api_key,
   http.end();
   if (err) return -1;
   return doc["total"] | -1;
+}
+
+int filamanInventoryStamp(const char* base_url, const char* api_key,
+                          int* out_count, int* out_witness_id, uint32_t timeout_ms) {
+  if (out_count)      *out_count = -1;
+  if (out_witness_id) *out_witness_id = 0;
+  if (!hasBaseUrl(base_url) || !out_count || !out_witness_id) return -1;
+
+  // The request of the count above and nothing added to it. No sort: FilaMan
+  // answers an unknown parameter with a validation error, and nothing says it
+  // takes one here. The witness is then whichever spool its default order
+  // puts first - less sharp than the newest one, but taken the same way every
+  // time, which is all a comparison needs.
+  HTTPClient http;
+  http.begin(String(base_url) + "/api/v1/spools?page_size=1");
+  // Both clocks, see spoolmanInventoryStamp().
+  http.setConnectTimeout(timeout_ms);
+  http.setTimeout(timeout_ms);
+  addApiKey(http, api_key);
+  // The code as it came: the caller tells a server that did not answer from
+  // one that answered 500.
+  const int code = http.GET();
+  if (code != 200) { http.end(); return code; }
+
+  JsonDocument filter;
+  filter["total"] = true;
+  filter["items"][0]["id"] = true;
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, http.getStream(),
+                                             DeserializationOption::Filter(filter));
+  http.end();
+  if (err) return -2;
+
+  *out_count      = doc["total"] | -1;
+  *out_witness_id = doc["items"][0]["id"] | 0;   // 0 for an empty inventory
+  return 200;
 }
 
 // How many events to look at. The log is newest first, and moves, status
@@ -862,8 +921,13 @@ bool filamanRfidSlot2Known(const char* base_url) {
   return strncmp(s_slot2_probed_for, base_url, sizeof(s_slot2_probed_for) - 1) == 0;
 }
 
+// The HTTP code of the last probe that went out, so a caller refusing on an
+// unanswered probe can pass on why. 0 when the answer came from the cache.
+static int s_slot2_probe_code = 0;
+
 bool filamanHasRfidSlot2(const char* base_url, const char* api_key,
                          uint32_t timeout_ms) {
+  s_slot2_probe_code = 0;
   if (!hasBaseUrl(base_url)) return false;
   if (strncmp(s_slot2_probed_for, base_url, sizeof(s_slot2_probed_for) - 1) == 0)
     return s_slot2_present;
@@ -873,6 +937,7 @@ bool filamanHasRfidSlot2(const char* base_url, const char* api_key,
   http.setTimeout(timeout_ms);
   addApiKey(http, api_key);
   const int code = http.GET();
+  s_slot2_probe_code = code;
   if (code != 200) {
     http.end();
     // Says nothing about the feature - an unreachable server, a proxy, a
@@ -930,7 +995,9 @@ int filamanClearRfidUids(const char* base_url, const char* api_key, int spool_id
     // probes again.
     logSDf("FilaMan: cannot tell whether spool %d has a second rfid slot, unlink refused",
            spool_id);
-    return -2;
+    // A probe that never reached the server hands its own code on, so the
+    // caller can say "no connection" instead of a bare refusal.
+    return s_slot2_probe_code < 0 ? s_slot2_probe_code : -2;
   }
   if (slot2) body["rfid_uid_2"] = nullptr;
 
@@ -1253,7 +1320,10 @@ int filamanCreateSpool(const char* base_url, const char* api_key, int filament_i
 
   JsonDocument body;
   body["filament_id"]            = filament_id;
-  body["initial_total_weight_g"] = roundGrams(initial_weight);
+  // Gross in FilaMan, filament and empty spool together; initial_weight is the
+  // net figure the mapping hands out. Unchanged, every copy of a copy lost the
+  // empty spool's weight once more.
+  body["initial_total_weight_g"] = roundGrams(initial_weight + (spool_weight > 0.0f ? spool_weight : 0.0f));
   body["empty_spool_weight_g"]   = roundGrams(spool_weight);
   body["remaining_weight_g"]     = roundGrams(remaining_weight);
   // A spool that lands on the scale has been unwrapped, and FilaMan would
@@ -1374,9 +1444,10 @@ int filamanGetSpoolJson(const char* base_url, const char* api_key, int spool_id,
 int filamanGetSpoolListJson(const char* base_url, const char* api_key,
                             bool include_archived, JsonDocument& out_doc,
                             const char* search_term, int page_size,
-                            uint32_t timeout_ms, DeserializationError* out_err) {
+                            uint32_t timeout_ms, DeserializationError* out_err,
+                            bool archived_only) {
   if (out_err) *out_err = DeserializationError::Ok;
-  s_last_list_partial = false;
+  lastListPartial() = false;
   if (!hasBaseUrl(base_url)) return -1;
 
   // FilaMan rejects page_size above 200 with a validation error, so an
@@ -1404,7 +1475,8 @@ int filamanGetSpoolListJson(const char* base_url, const char* api_key,
   while (true) {
     String url = String(base_url) + "/api/v1/spools?page=" + page
                + "&page_size=" + page_size;
-    if (include_archived) url += "&include_archived=true";
+    if (include_archived || archived_only) url += "&include_archived=true";
+    if (archived_only) { url += "&status_id="; url += FILAMAN_STATUS_ARCHIVED; }
     if (search_term && search_term[0]) {
       url += "&search=";
       url += urlEncodeQuery(search_term);
@@ -1413,7 +1485,7 @@ int filamanGetSpoolListJson(const char* base_url, const char* api_key,
     uint32_t elapsed = millis() - started_ms;
     if (elapsed >= timeout_ms) {
       logSDf("FilaMan: spool list timed out after %d of %d spools", fetched, total);
-      s_last_list_partial = true;
+      lastListPartial() = true;
       break;   // keep what was fetched, the caller sees a shorter list
     }
 
@@ -1463,7 +1535,7 @@ int filamanGetSpoolListJson(const char* base_url, const char* api_key,
     if (page >= FILAMAN_MAX_PAGES) {
       logSDf("FilaMan: stopped after %d pages, %d of %d spools fetched",
              page, fetched, total);
-      s_last_list_partial = true;
+      lastListPartial() = true;
       break;
     }
     page++;
@@ -1569,19 +1641,6 @@ int filamanSetDeviceAutoAssign(const char* base_url, const char* api_key,
 //  AMS SLOTS
 // ------------------------------------------------------------
 
-// FilaMan sends "#RRGGBB". An empty bay carries the placeholder #202020,
-// which is a real colour in the JSON and not a real colour on the spool, so
-// the caller decides by empty and only then asks for this.
-static bool parseDisplayColor(const char* hex, uint32_t* out) {
-  if (!hex || !out) return false;
-  const char* h = (hex[0] == '#') ? hex + 1 : hex;
-  if (strlen(h) < 6) return false;
-  unsigned int r, g, b;
-  if (sscanf(h, "%02X%02X%02X", &r, &g, &b) != 3) return false;
-  *out = ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
-  return true;
-}
-
 // The filter both calls share. Written once because the two only differ in
 // how much of it they use, and a second copy would drift.
 static void buildDisplayFilter(JsonDocument& filter, bool with_slots) {
@@ -1600,6 +1659,9 @@ static void buildDisplayFilter(JsonDocument& filter, bool with_slots) {
   JsonObject u = p["ams"].to<JsonArray>().add<JsonObject>();
   u["ams_id"]      = true;
   u["kind"]        = true;
+  // Which hardware: "ams_2_pro" and the like. Absent before the display API
+  // carried it, and null where the driver does not report it.
+  u["model"]       = true;
   u["label"]       = true;
   u["temperature"]    = true;
   u["humidity"]       = true;
@@ -1713,6 +1775,17 @@ int filamanGetAmsState(const char* base_url, const char* api_key, int printer_id
     dst.ams_id = (uint8_t)(u["ams_id"] | 0);
     dst.is_ext = (strcmp(kind, "external") == 0);
     dst.is_ht  = (strcmp(kind, "ams_ht") == 0);
+    // The model where the display API names it. Up to FilaMan 1.3.7 it does
+    // not, and then the kind is all there is: it tells an AMS HT apart, while
+    // an AMS 2 Pro and a first generation unit both arrive as "ams" and stay
+    // UNKNOWN - so the card offers no drying for the whole unit there.
+    const char* model = u["model"] | "";
+    dst.model  = amsModelFromModuleType(model);
+    if (dst.model == AMS_MODEL_UNKNOWN && dst.is_ht) dst.model = AMS_MODEL_AMS_HT;
+    if (sd_verbose) {
+      logSDf("[verbose] FilaMan: unit %d kind=%s model=%s -> %d", (int)dst.ams_id,
+             kind, model[0] ? model : "-", (int)dst.model);
+    }
 
     // A name the user gave the unit. "AMS A" and "External" are FilaMan's
     // own generated labels, and repeating those would put an untranslated
@@ -1795,8 +1868,11 @@ int filamanGetAmsState(const char* base_url, const char* api_key, int printer_id
       strncpy(t.backup_of, sl["backup_of"] | "", sizeof(t.backup_of) - 1);
 
       // Only an occupied bay has a colour worth drawing; an empty one
-      // carries the placeholder grey.
-      t.has_color = t.exists && parseDisplayColor(sl["color"] | "", &t.color);
+      // carries the placeholder #202020, a real colour in the JSON and not on
+      // any spool. FilaMan's display service cuts the colour to "#RRGGBB", so
+      // a clear spool arrives here as whatever its filament is filed under -
+      // the alpha is gone before it leaves the server.
+      if (t.exists) spoolColorParse(sl["color"] | "", &t.color);
 
       int pct = sl["remaining_percent"] | AMS_REMAIN_NA;
       if (pct < 0 || pct > 100) pct = AMS_REMAIN_NA;

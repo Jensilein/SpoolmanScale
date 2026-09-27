@@ -1,14 +1,16 @@
 // ============================================================
 //  SpoolmanScale – Localization (i18n)
 //  lang.h - String IDs, enum, T() macro
-//  Languages: DE (0) | EN (1)
+//  Languages: DE (0) | EN (1) | FR (2)
 // ============================================================
 #pragma once
 #include <stdint.h>
 #include <stdio.h>
 #include <stddef.h>
 
-enum Lang { LANG_DE = 0, LANG_EN = 1 };
+// LANG_COUNT is the sentinel loadPrefs() clamps against: the NVS byte is not
+// trustworthy, and an out-of-range value would index a column that is not there.
+enum Lang { LANG_DE = 0, LANG_EN = 1, LANG_FR = 2, LANG_COUNT };
 extern Lang g_lang;
 
 // Date format: 0 = DD.MM.YYYY  |  1 = YYYY-MM-DD
@@ -266,14 +268,10 @@ enum StringID {
   STR_EXTRA_FIELDS_CHECKING,
   STR_EXTRA_FIELDS_ALL_OK,
   STR_EXTRA_FIELDS_MISSING,
-  STR_EXTRA_FIELDS_CREATE_BTN,
-  STR_EXTRA_FIELDS_CONFIRM_TITLE,
-  STR_EXTRA_FIELDS_CONFIRM_MSG,
   STR_EXTRA_FIELDS_CREATING,
   STR_EXTRA_FIELDS_CREATE_FAIL,
   STR_EXTRA_FIELDS_NO_WIFI,
   STR_EXTRA_FIELDS_NO_SPOOLMAN,
-  STR_EXTRA_FIELDS_SKIP,
 
   // Calibration reminder screen (end of first setup)
   STR_CAL_REMINDER_TITLE,
@@ -285,10 +283,6 @@ enum StringID {
   STR_CAL_TARE_HINT,
 
   // Extra fields test button
-  STR_EF_TEST_BTN,
-  STR_EF_TEST_CREATED,
-  STR_EF_TEST_EXISTS,
-  STR_EF_TEST_FAIL,
 
   // Spoolman IP validation
   STR_SPOOLMAN_TESTING,
@@ -401,7 +395,6 @@ enum StringID {
   STR_COPY_ACTIVE_BTN,
   STR_COPY_ARCHIVED_BTN,
   STR_COPY_CONFIRM_TITLE,
-  STR_COPY_CONFIRM_MSG,
   STR_COPY_OK,
   STR_COPY_FAIL,
   STR_COPY_NO_SPOOLS,
@@ -659,8 +652,6 @@ enum StringID {
   STR_W_R_BACKEND,
   STR_W_R_REACHABLE,
   STR_W_R_SCANS,
-  STR_W_R_SDLOG,
-  STR_W_R_VERBOSE,
   STR_W_S_READY,
   STR_W_S_MISSING,
   STR_W_S_ON,
@@ -1148,28 +1139,289 @@ enum StringID {
   STR_AMSD_DRIED_Q,           // confirm: record today's drying for this bay
   STR_AMSD_SAVING,
   STR_AMSD_WRITE_FAIL,
+  // The main screen and More Info spelled this caption out as the literal
+  // "Material", which reads the same in German and English and so never needed
+  // the table. It is not a French word, so in French it stood out as the one
+  // untranslated label on the busiest screen. Appended here rather than filed
+  // with the other main screen labels: the table is positional.
+  STR_LBL_MATERIAL,
+  // The same story for these: each was a literal because German and English
+  // happen to agree on it, and French does not. The number pads still compare
+  // their keys against "DEL"; only the label on the key comes from here.
+  STR_LBL_STATUS,             // status chip caption (More Info, AMS bay card)
+  STR_WIFI_ROW_STATUS,        // WiFi info row
+  STR_WIFI_ROW_GATEWAY,       // WiFi info and WiFi connected rows
+  STR_IP_BAR_NAME,            // IP bar mode that shows the device name
+  STR_SERVER_TITLE,           // "%s Server": backend address screen title
+  STR_BACKEND_UUID,           // "%s UUID": More Info caption
+  STR_LANG_SCREEN_TITLE,      // language screen title
+  STR_KEY_DEL,                // delete key of the number pads
+  STR_AMSD_DRIED_Q_ALL,       // confirm, when the whole unit is on offer too
+  STR_AMSD_DRIED_ALL,         // "All %d spools in %s", count and unit name
+  STR_AMSD_DRIED_ONE,         // the single-spool answer beside it
+  STR_AMSD_BATCH_RUNNING,     // "Saving %d spools ...", count
+  STR_AMSD_BATCH_DONE,        // "%d of %d saved", saved and total
+  STR_AMSV_DRYING_MIN,        // "Drying %d min" - a cycle without a target temperature
+  STR_AMSV_DRYING,            // "Drying" - neither figure reported
+  STR_AMSD_TYPE_CONFLICT,     // "Printer reports %s - ...", the printer's material
+  STR_W_SNAPMAKER,            // web config: the switch for Snapmaker tags
+  STR_W_SNAPMAKER_HINT,       // what it costs and why it is off
+  STR_PART_HINT_TITLE,        // device popup: the old partition table
+  STR_PART_HINT_TEXT,
+  STR_W_R_LAYOUT,             // status page, hardware card
+  STR_W_S_LAYOUT_NEW,         // pill: "current"
+  STR_W_S_LAYOUT_OLD,         // pill: "outdated"
+  STR_W_S_LAYOUT_OLD_HINT,    // the line under the rows on the old table
+  STR_W_R_FIRMWARE,
+  STR_W_S_MB_OF,              // "%s of %s MB"
+  STR_W_R_DATA_AREA,
+  STR_W_S_DATA_UNUSED,        // "%s MB, not used yet"
+  STR_W_S_NONE,
+  STR_W_R_COREDUMP,
+  STR_LINK_NO_CONNECTION,     // status line: the link request never got an answer
+  STR_UNLINK_NO_CONNECTION,   // status line: the unlink never reached the server
+  STR_NO_CONNECTION,          // weight line and id entry: the server did not answer
+  STR_NO_CONNECTION_TO,       // status line, with the backend's name in it
+  STR_SERVER_DOWN_TITLE,      // popup after an action found no server
+  STR_SERVER_DOWN_TEXT,
+
+  STR_W_R_LOGDEST,   // where the lines are kept
+  STR_W_S_DEST_OFF,
+  STR_W_S_DEST_SD,
+  STR_W_S_DEST_INT,
+  STR_W_R_LOGLVL,   // how much of it is kept
+  STR_W_S_LVL_MIN,
+  STR_W_S_LVL_NORM,
+  STR_W_S_LVL_VERB,
+  STR_W_LOG_INTERNAL,   // the ring in flash, in the file list
+  STR_W_LOG_LINES_OF,
+  STR_W_LOG_SRC_ALL,   // filter above the list
+  STR_W_LOG_INT_NONE,
+  STR_W_LOG_INT_NOTE,
+
+  // The link flow's spool list, when it was handed out by the list cache
+  STR_LIST_SPOOL_CHANGED,     // on top of a list rebuilt because a tapped spool had changed
+  STR_LIST_AS_OF,             // under such a list: the clock time it was loaded, %02d:%02d
+  STR_LIST_RELOAD,            // and the button beside it
+  STR_TW_BUSY_WRITE,          // the card that stands while a tag is being written
+  STR_TW_BUSY_ERASE,          // the same while it is being erased
+  STR_TW_BUSY_HINT,           // below either: the spool has to stay where it is
+
+  // Tag page in the browser: a MIFARE tag, and the spool the scale shows
+  STR_W_TAG_NOREC,            // a MIFARE tag that is neither Bambu's nor Snapmaker's
+  STR_W_TAG_TRAY,             // row caption, Bambu's tray UUID
+  STR_W_TAG_ONSCALE,          // title of the middle card
+  STR_W_TAG_NOSPOOL,          // that card when the scale shows no spool
+
+  // Tag view on the device, from the NFC chip in the header
+  STR_TV_TITLE,               // header of the card
+  STR_TV_UID,                 // caption
+  STR_TV_CHIP,                // caption over NTAG215, 496 bytes
+  STR_TV_FMT_BLANK,           // the format cell of a blank NTAG
+  STR_TV_FMT_UNKNOWN,         // of an NTAG holding something unreadable
+  STR_TV_FMT_NONE,            // of a MIFARE tag that is neither Bambu's nor Snapmaker's
+  STR_TV_BLANK_NOTE,          // in place of the fields, blank NTAG
+  STR_TV_PLACE,               // the whole card, no tag on the reader
+  STR_TV_READER_DOWN,         // the whole card, reader not answering
+  STR_TV_WRITE,               // button, %d = spool id
+  STR_TV_NOSPOOL,             // the same button, disabled: no spool to write
+  STR_TV_TOOSMALL,            // disabled: the record does not fit
+  STR_TV_ERASE_TITLE,         // the question behind the erase button
+  STR_TV_ERASE_HINT,          // and its consequence
+
+  // Tag page in the browser: linking the tag on the reader without writing it
+  STR_W_TAG_LINKONLY,         // the button
+  STR_W_TAG_RO_LINK,          // the note under the buttons for a read-only tag
+  STR_W_TL_ASK_REPLACE,       // the spool has another tag, this one takes its place; %d, %s
+  STR_W_TL_ASK_ADD,           // the same where both stay bound; %d, %s
+  STR_W_TL_REFUSED,           // the request was not taken
+  STR_W_TL_BUSY,              // %d = spool
+  STR_W_TL_OK,                // %d = spool
+  STR_W_TL_ALREADY,           // %d = spool
+  STR_W_TL_HELD,              // %d = the spool that holds the tag
+  STR_W_TL_CHANGED,           // another tag on the reader by the time it ran
+  STR_W_TL_FAILED,            // the server answered no
+  STR_COPY_CARD_TEMPLATE,     // copy confirmation: %s vendor, %d template spool id
+  STR_COPY_CARD_WEIGHT,       // copy confirmation: %.0f net on the scale, %.0f empty spool
+  STR_COPY_CARD_CREATE,       // copy confirmation: the confirming button
+
+  // Bluetooth: the Connection tile, the screen behind it, the device scan
+  STR_BT_TITLE,               // tile and screen title
+  STR_BT_SWITCH,              // the master switch row
+  STR_BT_SWITCH_SUB,          // what on means
+  STR_BT_SCANNING,            // the loading overlay
+  STR_BT_NONE_FOUND,          // after a scan that saw nothing
+  STR_BT_UNNAMED,             // a device that did not say its name
+  STR_BT_INIT_FAILED,         // the stack could not start
+  STR_BT_HELP,                // the ? on the screen
+  STR_BT_DEVICES,             // the row into the list, and the list's title
+  STR_BT_DEVICES_NONE_YET,    // the row before the first scan
+  STR_BT_DEVICES_FMT,         // %d = devices the last scan saw
+  STR_BT_SIG_STRONG,          // signal in words, three steps
+  STR_BT_SIG_MEDIUM,
+  STR_BT_SIG_WEAK,
+  STR_BT_CARD_ADDRESS,        // the card's lines
+  STR_BT_CARD_SIGNAL,
+  STR_BT_CLOSE,               // the card's way out
+  STR_BT_CARD_USE_PRINTER,    // the card's action: make this the printer
+  STR_BT_CARD_IS_PRINTER,     // the card's role line
+  STR_BT_CARD_FORGET_PRINTER, // the card's action when it is the printer
+
+  // The label printer: its screen, its rows, what a print came back with
+  STR_PRN_TITLE,              // row on the Bluetooth screen, the screen, popups
+  STR_PRN_NONE,               // the row's subtitle without a printer
+  STR_PRN_DEVICE,             // the device row
+  STR_PRN_DEVICE_NONE,        // its subtitle without a printer
+  STR_PRN_MODEL,
+  STR_PRN_EXPERIMENTAL,       // after a model nobody printed on yet
+  STR_PRN_MEDIA,              // the label stock row
+  STR_PRN_MEDIA_FMT,          // %u x %u mm
+  STR_PRN_TEST,
+  STR_PRN_TEST_SUB,
+  STR_PRN_FORGET,
+  STR_PRN_OK,
+  STR_PRN_ERR_NO_PRINTER,
+  STR_PRN_ERR_RASTER,
+  STR_PRN_ERR_TOO_WIDE,
+  STR_PRN_ERR_MEDIA,
+  STR_PRN_ERR_BLE_OFF,
+  STR_PRN_ERR_CONNECT,
+  STR_PRN_ERR_NOT_PRINTER,
+  STR_PRN_ERR_STUCK,
+  STR_PRN_ERR_WRITE,
+  STR_PRN_HELP,               // the ? on the printer screen
+
+  // The printer page in the browser
+  STR_W_NAV_PRINTER,          // the tab
+  STR_W_P_BLE_HINT,           // under the master switch
+  STR_W_P_SUPPORTED,          // card: which printers the scale can drive
+  STR_W_P_TESTED,             // the M220's verdict
+  STR_W_P_SUPPORTED_HINT,
+  STR_W_P_DEVICES,            // the device list's label
+  STR_BT_SCAN_WEB,            // the scan button
+  STR_W_P_SCAN_HINT,
+  STR_W_P_MEDIA_HINT,         // which way the two numbers go
+  STR_W_P_TEST_HINT,
+  STR_W_P_LAST_TEST,
+  STR_W_P_QUEUED,             // a route's answer when the scale took the job
+  STR_PRN_LABEL_PRINT,        // the button in the More info header
+  STR_PRN_ERR_NO_SPOOL,       // pressed with nothing the backend knows on the pad
+  // The captions on a printed label, short: the lines are 16 px on a 40 mm roll
+  STR_LBL_L_COLOR,
+
+  // The print card, while the raster is drawn
+  STR_PRN_PH_RENDER,
+  STR_PRN_PH_FIND,
+  STR_PRN_PH_CONNECT,
+  STR_PRN_PH_SEND,
+  STR_PRN_PH_AWAIT,
+  // Result card titles
+  STR_PRN_DONE_TITLE,
+  STR_PRN_DONE_MSG,
+  STR_PRN_UNCONF_TITLE,
+  STR_PRN_UNCONF_MSG,
+  STR_PRN_FAIL_TITLE,
+  // Below the device list while it hides the nameless ones
+  STR_BT_FILTER_NOTE,
+  STR_BT_SHOW_ALL_FMT,
+  STR_BT_SHOW_NAMED,
+
+  // The info screen's fifth code, the manual
+  STR_QR_DOCS_TITLE,
+  STR_QR_DOCS_DESC,
+
+  // Tag page: Simon's cards, translated
+  STR_W_C_ONSCALE,
+  STR_W_TAG_BADGE_TAG,
+  STR_W_TAG_PREVIEW,
+  STR_W_TAG_NOTLINKED,
+  STR_W_TAG_SPOOLID,
+  STR_W_TAG_PROTO,
+  STR_W_TAG_RAW,
+  STR_W_TAG_RAW_TITLE,
+  STR_W_COPY,
+  STR_W_COPIED,
+  // Tag page: status while writing
+  STR_W_TW_BUSY_BTN,
+  STR_W_TW_KEEP,
+  STR_W_TW_RETRY,
+  // Tag page: the second tag, driving the scale's own flow
+  STR_W_T2_OFFER,
+  STR_W_T2_OFFER_HINT,
+  STR_W_T2_START,
+  STR_W_T2_DONE_BTN,
+  STR_W_T2_WAIT,
+  STR_W_T2_WAIT_HINT,
+  STR_W_T2_LEFT,
+  STR_W_T2_LINKING,
+  STR_W_T2_OK,
+  STR_W_T2_OK_HINT,
+  STR_W_T2_FAIL,
+  STR_W_T2_EXPIRED,
+  // Tag page: the scale's write question, answered here
+  STR_W_ASK_WRITE,
+  STR_W_ASK_OVER_TITLE,
+  STR_W_ASK_OVER,
+  STR_W_ASK_YES_OVER,
+  STR_W_ASK_YES_WRITE,
+  // Tag page: a write the scale did not take
+  STR_W_TW_REFUSED,
+  // Label: the date line, and the test label
+  STR_LBL_L_FIRST,
+  STR_LBL_L_ADDED,
+  STR_LBL_TEST_BAND,
+  STR_LBL_TEST_DONATE,
+  // Spoolman: extra.tag for OpenSpoolman beside the native tags
+  STR_OSM_TAG,
+  STR_OSM_TAG_SUB,
+  STR_OSM_TAG_INFO,
+  // Extra fields screen: the verdict at the top
+  STR_EF_HEAD_OK,
+  STR_EF_HEAD_MISSING,
+  STR_EF_BTN_CREATE,
+  STR_EF_NATIVE_SUB,
+  // The old partition table: an update that no longer fits
+  STR_PART_HINT_BLOCKED,
+  STR_PART_HINT_LATER,
+  STR_PART_HINT_QR,
+  STR_GH_OTA_TOO_BIG,
+  // Firmware page: the upload with its own progress
+  STR_W_FW_UPLOADING,
+  STR_W_FW_TOOBIG,
+  STR_PART_HINT_ERASE,
+  STR_INIT_W_FAIL_TEXT,
 
   STR_COUNT
 };
 
 // Deliberately without a bound: it comes from the initializer in lang.cpp, so
-// the static_assert there can compare the two. Spelled [STR_COUNT][2] here,
+// the static_assert there can compare the two. Spelled [STR_COUNT][3] here,
 // the definition inherits that bound, a short initializer is padded with
 // nullptr, and nothing complains.
-extern const char* const STRINGS[][2];
+extern const char* const STRINGS[][3];
 
 // Which string explains a TagWriteResult. Lives here rather than in either
 // caller: the device popup and the tag page in the browser say the same thing
 // about the same code, and two tables would have drifted apart.
 StringID tagWriteResultString(uint8_t code);
 
+// The row in the current language, or in English when that cell is empty. A row
+// written with German and English only still compiles into the three-column
+// table - C pads the missing cell with nullptr - and a %s handed nullptr
+// restarts this board rather than printing "(null)". Falling back keeps such a
+// row readable until its French is added.
+static inline const char* langText(int id) {
+  const char* s = STRINGS[id][g_lang];
+  return s ? s : STRINGS[id][LANG_EN];
+}
+
 // Macro: T(STR_XXX) -> returns the string in the current language. LVGL can
 // take it directly; lv_label_set_text() copies.
-#define T(id) STRINGS[id][g_lang]
+#define T(id) langText(id)
 
 // A table string into a buffer, terminated - for the places that go on to
 // format or append. It replaces strncpy(buf, T(id), sizeof(buf) - 1), which
 // left the last byte to chance whenever a translation filled the buffer.
 static inline void copyT(char* dst, size_t n, int id) {
-  snprintf(dst, n, "%s", STRINGS[id][g_lang]);
+  snprintf(dst, n, "%s", langText(id));
 }

@@ -10,16 +10,20 @@
 #include "hardware/display_power.h"
 #include "hardware/sd_logger.h"
 #include "ui/ams_view.h"
+#include "ui/ble_devices_screen.h"
+#include "ui/bluetooth_screen.h"
 #include "ui/confirm_popup.h"
 #include "ui/connection_screen.h"
 #include "ui/extra_fields_screen.h"
 #include "ui/language_screen.h"
 #include "ui/nfc_reset_popup.h"
 #include "ui/ota_github.h"
+#include "ui/printer_screen.h"
 #include "ui/reboot_popup.h"
 #include "ui/system_screen.h"
 #include "ui/spoolman_screen.h"
 #include "ui/wifi_info.h"
+#include "ui/wifi_menu_screen.h"
 #include "ui/wifi_setup_screen.h"
 #include "ui/wifi_portal_screen.h"
 #include "ui/more_info_screen.h"
@@ -27,6 +31,7 @@
 #include "ui/header_status.h"
 #include "ui/settings_screen.h"
 #include "ui/spool_flow.h"
+#include "ui/tag_view.h"
 
 
 void hideAllOverlays() {
@@ -74,6 +79,10 @@ void hideAllOverlays() {
   if (scr_tag_field)     lv_obj_add_flag(scr_tag_field, LV_OBJ_FLAG_HIDDEN);
   if (scr_spoolman_fail) lv_obj_add_flag(scr_spoolman_fail, LV_OBJ_FLAG_HIDDEN);
   if (scr_wifi)        lv_obj_add_flag(scr_wifi,        LV_OBJ_FLAG_HIDDEN);
+  if (scr_wifi_menu)   lv_obj_add_flag(scr_wifi_menu,   LV_OBJ_FLAG_HIDDEN);
+  if (scr_bluetooth)   lv_obj_add_flag(scr_bluetooth,   LV_OBJ_FLAG_HIDDEN);
+  if (scr_ble_devices) lv_obj_add_flag(scr_ble_devices, LV_OBJ_FLAG_HIDDEN);
+  if (scr_printer)     lv_obj_add_flag(scr_printer,     LV_OBJ_FLAG_HIDDEN);
   if (scr_spoolman)    lv_obj_add_flag(scr_spoolman,    LV_OBJ_FLAG_HIDDEN);
   if (scr_welcome)     lv_obj_add_flag(scr_welcome,     LV_OBJ_FLAG_HIDDEN);
   if (scr_first_boot)  lv_obj_add_flag(scr_first_boot,  LV_OBJ_FLAG_HIDDEN);
@@ -99,8 +108,9 @@ void hideAllOverlays() {
   closeRebootPopup();
   closeNfcResetHint();
   closeFactoryResetPopup();
-  closeExtraFieldsPopup();
   closeMoreInfoPopups();
+  closeTagView();
+  closeBleDeviceCard();
 }
 
 void deleteOtaScreens() {
@@ -120,6 +130,10 @@ void deleteOtaScreens() {
 static void deleteSecondaryScreens() {
   closeWifiInfoScreen();
   closeConnectionScreen();
+  closeWifiMenuScreen();
+  closeBluetoothScreen();
+  closeBleDevicesScreen();
+  closePrinterScreen();
   closeSpoolmanScreen();
   closeWifiConnectingScreen();
   closeWifiPortalScreen();

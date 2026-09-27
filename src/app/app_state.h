@@ -72,6 +72,10 @@ extern lv_obj_t *scr_factor;
 extern lv_obj_t *scr_bag;
 extern lv_obj_t *scr_lastused;
 extern lv_obj_t *scr_connection;
+extern lv_obj_t *scr_wifi_menu;
+extern lv_obj_t *scr_bluetooth;
+extern lv_obj_t *scr_ble_devices;
+extern lv_obj_t *scr_printer;
 extern lv_obj_t *scr_scale_sub;
 extern lv_obj_t *scr_drying_reminder;
 extern lv_obj_t *scr_display;
@@ -259,6 +263,7 @@ extern lv_obj_t *s_ams_numpad_scr;
 extern lv_obj_t *s_ams_numpad_lbl;
 extern lv_obj_t *lbl_nfc_dot;
 extern lv_obj_t *lbl_hdr_wifi;
+extern lv_obj_t *lbl_hdr_bt;
 extern lv_obj_t *lbl_hdr_nfc;
 extern lv_obj_t *lbl_hdr_scl;
 extern lv_obj_t *lbl_hdr_scans;
@@ -295,6 +300,9 @@ extern lv_obj_t *btn_ams_main;
 // that answer costs a blocking round trip and lives nowhere a chip could read
 // it. Colour is therefore an affordance here, not a verdict.
 extern lv_obj_t *btn_hdr_ams;
+// The NFC chip, the second button among them: it opens the tag view. Its
+// label is lbl_hdr_nfc, which still says whether the reader answers.
+extern lv_obj_t *btn_hdr_nfc;
 extern lv_obj_t *scr_more_info;
 extern int scan_count;
 extern lv_obj_t *page_main;
