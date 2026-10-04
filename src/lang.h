@@ -1166,6 +1166,8 @@ enum StringID {
   STR_AMSD_TYPE_CONFLICT,     // "Printer reports %s - ...", the printer's material
   STR_W_SNAPMAKER,            // web config: the switch for Snapmaker tags
   STR_W_SNAPMAKER_HINT,       // what it costs and why it is off
+  STR_W_CREALITY,             // web config: the switch for Creality CFS tags
+  STR_W_CREALITY_HINT,        // what it does and what it costs
   STR_PART_HINT_TITLE,        // device popup: the old partition table
   STR_PART_HINT_TEXT,
   STR_W_R_LAYOUT,             // status page, hardware card

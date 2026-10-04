@@ -1023,7 +1023,8 @@ static void infoFromMifare(TagInfo *ti) {
     snprintf(ti->fmt, sizeof(ti->fmt), "unsupported");
     return;
   }
-  snprintf(ti->fmt, sizeof(ti->fmt), "%s", bambu ? "Bambu" : "Snapmaker");
+  const bool creality = !bambu && !strcmp(g_tag.decoder, "Creality");
+  snprintf(ti->fmt, sizeof(ti->fmt), "%s", bambu ? "Bambu" : creality ? "Creality" : "Snapmaker");
   // Most Bambu tags carry no vendor string, but a tag that reads with the
   // Bambu keys can only be theirs - the answer scanTick() gives as well.
   copyPrintable(ti->brand, sizeof(ti->brand),
@@ -1086,6 +1087,14 @@ static void refreshCache(bool force = false) {
         g_tag.uid_str, g_tag.tray_uuid, g_tag.vendor, g_tag.material,
         chex, g_tag.temp_min, g_tag.temp_max, (double)g_tag.spool_weight,
         g_tag.production_date, countBambuDataBlocksRead(g_tag));
+    } else if (!strcmp(cached_info.fmt, "Creality")) {
+      snprintf(cached_raw, sizeof(cached_raw),
+        "{\"format\":\"Creality CFS\",\"uid\":\"%s\",\"vendor\":\"%s\",\"filament\":\"%s\","
+        "\"filament_id\":\"%s\",\"material\":\"%s\",\"color\":\"#%s\",\"nozzle\":\"%d-%d\","
+        "\"weight_g\":%.0f,\"serial\":\"%s\",\"date\":\"%s\"}",
+        g_tag.uid_str, g_tag.vendor, g_tag.detailed_filament, g_tag.material_id,
+        g_tag.material, chex, g_tag.temp_min, g_tag.temp_max,
+        (double)g_tag.spool_weight, g_tag.serial, g_tag.production_date);
     } else if (!strcmp(cached_info.fmt, "Snapmaker")) {
       snprintf(cached_raw, sizeof(cached_raw),
         "{\"format\":\"Snapmaker\",\"uid\":\"%s\",\"material\":\"%s\",\"color\":\"#%s\","

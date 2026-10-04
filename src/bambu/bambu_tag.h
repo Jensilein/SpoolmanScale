@@ -32,6 +32,13 @@ struct BambuTagData {
   float    spool_weight;
   char     production_date[12];
   char     short_uid[20];
+  // Which decoder filled this record when it is not Bambu's own: empty for
+  // Bambu and for a plain card, "Creality" for a CFS tag. Snapmaker leaves it
+  // empty and is told apart as before.
+  char     decoder[12];
+  // Creality only: the six digit serial. FilaStation writes the Spoolman spool
+  // id there, Creality's own spools a running number.
+  char     serial[8];
 
   bool     spoolman_found;
   int      spoolman_id;

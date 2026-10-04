@@ -2531,6 +2531,10 @@ const char* const STRINGS[][3] = {
   { "Versucht bei einem 4-Byte-Tag, der kein Bambu-Tag ist, die Snapmaker-Schlüssel und liest Material und Farbe vom Tag. Kostet jeden anderen 4-Byte-Tag etwa eine halbe Sekunde beim Auflegen. Aus lassen, wenn keine Snapmaker-Spulen im Haus sind.",
     "Tries Snapmaker's keys on a 4 byte tag that is not a Bambu tag and reads material and colour off the tag. Costs every other 4 byte tag about half a second when it is put down. Leave it off if there are no Snapmaker spools around.",
     "Essaie les clés Snapmaker sur un tag de 4 octets qui n'est pas un tag Bambu, et lit le matériau et la couleur sur le tag. Chaque autre tag de 4 octets met alors environ une demi-seconde de plus à être reconnu. À laisser désactivé s'il n'y a pas de bobines Snapmaker." },  // STR_W_SNAPMAKER_HINT
+  { "Creality-CFS-Tags lesen", "Read Creality CFS tags", "Lire les tags Creality CFS" },  // STR_W_CREALITY
+  { "Liest bei einem 4-Byte-Tag, der kein Bambu-Tag ist, den Creality-CFS-Inhalt (K2 Plus, K2 Pro, K2 Max, Hi): Material, Farbe und Gewicht. Der Schlüssel wird aus der UID berechnet, andere 4-Byte-Tags kostet das nur einen kurzen Fehlversuch.",
+    "Reads the Creality CFS contents of a 4 byte tag that is not a Bambu tag (K2 Plus, K2 Pro, K2 Max, Hi): material, colour and weight. The key is computed from the UID, so other 4 byte tags only cost one short failed attempt.",
+    "Lit le contenu Creality CFS d'un tag de 4 octets qui n'est pas un tag Bambu (K2 Plus, K2 Pro, K2 Max, Hi) : matériau, couleur et poids. La clé est calculée à partir de l'UID, les autres tags de 4 octets ne perdent qu'un court essai." },  // STR_W_CREALITY_HINT
   { "Einmalig kurz per USB aktualisieren",
     "A quick one-time update over USB",
     "Mise à jour USB rapide, une fois" },  // STR_PART_HINT_TITLE

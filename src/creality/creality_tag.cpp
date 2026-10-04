@@ -1,0 +1,220 @@
+#include "creality_tag.h"
+
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "mbedtls/aes.h"
+
+// Both keys are the ones Creality's firmware and every community writer use
+// (CFS RFID app, CFTag, K2-RFID). They are not secrets of this project.
+static const uint8_t SECTOR_SECRET[16] = {
+  'q','3','b','u','^','t','1','n','q','f','Z','(','p','f','$','1' };
+static const uint8_t DATA_KEY[16] = {
+  'H','@','C','F','k','R','n','z','@','K','A','t','B','J','p','2' };
+
+static bool aesEcb(const uint8_t key[16], int mode, const uint8_t* in, uint8_t* out, size_t len) {
+  mbedtls_aes_context ctx;
+  mbedtls_aes_init(&ctx);
+  int rc = (mode == MBEDTLS_AES_ENCRYPT) ? mbedtls_aes_setkey_enc(&ctx, key, 128)
+                                         : mbedtls_aes_setkey_dec(&ctx, key, 128);
+  for (size_t off = 0; rc == 0 && off < len; off += 16) {
+    rc = mbedtls_aes_crypt_ecb(&ctx, mode, in + off, out + off);
+  }
+  mbedtls_aes_free(&ctx);
+  return rc == 0;
+}
+
+bool crealityDeriveSectorKey(const uint8_t uid4[4], uint8_t key_out[6]) {
+  uint8_t in[16], enc[16];
+  for (int i = 0; i < 16; i++) in[i] = uid4[i % 4];
+  if (!aesEcb(SECTOR_SECRET, MBEDTLS_AES_ENCRYPT, in, enc, 16)) return false;
+  memcpy(key_out, enc, 6);
+  return true;
+}
+
+bool crealityDecrypt48(const uint8_t in[48], uint8_t out[48]) {
+  return aesEcb(DATA_KEY, MBEDTLS_AES_DECRYPT, in, out, 48);
+}
+
+// ------------------------------------------------------------
+//  Material table
+//
+//  Generated from DnG-Crafts/K2-RFID db/{k2,hi,k1}.json, which is Creality
+//  Print's material database. The tag holds "1" + id.
+// ------------------------------------------------------------
+struct CrealityMaterial {
+  const char* id;
+  const char* brand;
+  const char* name;
+  const char* material;
+  uint16_t    temp_min, temp_max;
+};
+
+static const CrealityMaterial MATERIALS[] = {
+  {"00001", "Generic", "Generic PLA", "PLA", 190, 240},
+  {"00002", "Generic", "Generic PLA-Silk", "PLA", 190, 240},
+  {"00003", "Generic", "Generic PETG", "PETG", 220, 270},
+  {"00004", "Generic", "Generic ABS", "ABS", 240, 280},
+  {"00005", "Generic", "Generic TPU", "TPU", 210, 240},
+  {"00006", "Generic", "Generic PLA-CF", "PLA-CF", 190, 240},
+  {"00007", "Generic", "Generic ASA", "ASA", 240, 280},
+  {"00008", "Generic", "Generic PA", "PA", 240, 260},
+  {"00009", "Generic", "Generic PA-CF", "PA-CF", 260, 300},
+  {"00010", "Generic", "Generic BVOH", "BVOH", 200, 220},
+  {"00011", "Generic", "Generic PVA", "PVA", 215, 225},
+  {"00012", "Generic", "Generic HIPS", "HIPS", 220, 250},
+  {"00013", "Generic", "Generic PET-CF", "PET-CF", 280, 320},
+  {"00014", "Generic", "Generic PETG-CF", "PETG-CF", 240, 260},
+  {"00015", "Generic", "Generic PA6-CF", "PA6-CF", 280, 300},
+  {"00016", "Generic", "Generic PAHT-CF", "PAHT-CF", 300, 320},
+  {"00017", "Generic", "Generic PPS", "PPS", 320, 350},
+  {"00018", "Generic", "Generic PPS-CF", "PPS-CF", 300, 350},
+  {"00019", "Generic", "Generic PP", "PP", 220, 250},
+  {"00020", "Generic", "Generic PET", "PET", 250, 270},
+  {"00021", "Generic", "Generic PC", "PC", 250, 270},
+  {"00022", "Generic", "Generic PA612-CF", "PA-CF", 270, 310},
+  {"00023", "Generic", "Generic Support for PA", "PA", 260, 300},
+  {"00024", "Generic", "Generic Support for PLA", "PLA", 190, 240},
+  {"00025", "Generic", "Generic PA12-CF", "PA-CF", 270, 310},
+  {"00026", "Generic", "Generic TPU 64D", "TPU", 210, 240},
+  {"00027", "Generic", "Generic PETG-GF", "PETG-GF", 240, 280},
+  {"00031", "Generic", "Generic PP-CF", "PP-CF", 220, 270},
+  {"00032", "Generic", "Generic PCTG", "PCTG", 250, 270},
+  {"00033", "Generic", "Generic ASA-CF", "ASA-CF", 250, 280},
+  {"00034", "Generic", "Generic PA6-GF", "PA-GF", 250, 290},
+  {"00035", "eSUN", "PLA-LW", "PLA", 190, 270},
+  {"01001", "Creality", "Hyper PLA", "PLA", 190, 240},
+  {"01002", "Creality", "Hyper L-W PLA", "PLA", 200, 270},
+  {"01004", "Creality", "Hyper Stardust", "PLA", 190, 240},
+  {"01601", "Creality", "Soleyin Ultra PLA", "PLA", 190, 240},
+  {"02001", "Creality", "Hyper PLA-CF", "PLA-CF", 190, 240},
+  {"03001", "Creality", "Hyper ABS", "ABS", 240, 280},
+  {"04001", "Creality", "CR-PLA", "PLA", 190, 240},
+  {"05001", "Creality", "CR-Silk", "PLA", 190, 240},
+  {"06001", "Creality", "CR-PETG", "PETG", 220, 270},
+  {"06002", "Creality", "Hyper PETG", "PETG", 220, 270},
+  {"06003", "Creality", "Hyper PETG-CF", "PETG-CF", 240, 260},
+  {"07001", "Creality", "CR-ABS", "ABS", 240, 280},
+  {"07002", "Creality", "Hyper PC", "PC", 250, 270},
+  {"08001", "Creality", "Ender-PLA", "PLA", 190, 240},
+  {"09001", "Creality", "EN-PLA+", "PLA", 190, 240},
+  {"09002", "Creality", "ENDER FAST PLA", "PLA", 190, 240},
+  {"10001", "Creality", "HP-TPU", "TPU", 190, 240},
+  {"11001", "Creality", "CR-Nylon", "PA", 250, 270},
+  {"12002", "Creality", "Hyper PPA-CF", "PA-CF", 280, 320},
+  {"12003", "Creality", "Hyper PAHT-CF", "PA-CF", 280, 320},
+  {"12004", "Creality", "Hyper PA612-CF", "PA612-CF", 290, 320},
+  {"12005", "Creality", "Hyper PA6-CF", "PA6-CF", 290, 320},
+  {"13001", "Creality", "CR-PLA Carbon", "PLA-CF", 190, 240},
+  {"14001", "Creality", "CR-PLA Matte", "PLA", 190, 240},
+  {"15001", "Creality", "CR-PLA Fluo", "PLA", 190, 240},
+  {"16001", "Creality", "CR-TPU", "TPU", 210, 240},
+  {"17001", "Creality", "CR-Wood", "PLA", 190, 240},
+  {"18001", "Creality", "HP Ultra PLA", "PLA", 190, 240},
+  {"19001", "Creality", "HP-ASA", "ASA", 240, 280},
+  {"29001", "Creality", "Hyper Marble", "PLA", 190, 240},
+  {"E1001", "eSUN", "PLA+", "PLA", 210, 230},
+  {"P1001", "Polymaker", "Panchroma PLA Satin", "PLA", 190, 230},
+  {"P1002", "Polymaker", "PolySonic PLA Pro", "PLA", 190, 230},
+  {"P1003", "Polymaker", "Panchroma PLA Matte", "PLA", 190, 230},
+};
+
+static const CrealityMaterial* findMaterial(const char* id5) {
+  for (const CrealityMaterial& m : MATERIALS) {
+    if (strcasecmp(m.id, id5) == 0) return &m;
+  }
+  return nullptr;
+}
+
+// ------------------------------------------------------------
+//  Length to weight
+//
+//  The length field is metres as decimal digits. These are the values
+//  Creality's own spools and the K2-RFID writers use. FilaStation (waage.py up
+//  to v3.6) wrote three of them as hex grams instead, which the CFS reads as
+//  nonsense lengths; they are recognised here so such tags still show the
+//  weight they were meant to say.
+// ------------------------------------------------------------
+static uint16_t weightFromLength(const char len4[4], uint16_t* metres_out) {
+  struct { const char* code; uint16_t g; } known[] = {
+    {"0330", 1000}, {"0247", 750}, {"0198", 600}, {"0165", 500}, {"0082", 250},
+    {"02EE", 750},  {"01C2", 600}, {"00FA", 250},   // FilaStation's hex grams
+  };
+  *metres_out = 0;
+  for (auto& k : known) {
+    if (strncasecmp(len4, k.code, 4) == 0) {
+      char buf[5]; memcpy(buf, len4, 4); buf[4] = '\0';
+      bool dec = isdigit((unsigned char)buf[0]) && isdigit((unsigned char)buf[1]) &&
+                 isdigit((unsigned char)buf[2]) && isdigit((unsigned char)buf[3]);
+      if (dec) *metres_out = (uint16_t)atoi(buf);
+      return k.g;
+    }
+  }
+  for (int i = 0; i < 4; i++) {
+    if (!isdigit((unsigned char)len4[i])) return 0;
+  }
+  char buf[5]; memcpy(buf, len4, 4); buf[4] = '\0';
+  int m = atoi(buf);
+  *metres_out = (uint16_t)m;
+  if (m <= 0) return 0;
+  // 330 m of 1.75 mm PLA is a kilogram. Other materials differ by their
+  // density, which only the spool record in Spoolman knows.
+  return (uint16_t)((m * 1000 + 165) / 330);
+}
+
+static bool isHexStr(const char* s, int n) {
+  for (int i = 0; i < n; i++) {
+    if (!isxdigit((unsigned char)s[i])) return false;
+  }
+  return true;
+}
+
+static uint8_t hexByte(const char* s) {
+  char b[3] = { s[0], s[1], '\0' };
+  return (uint8_t)strtoul(b, nullptr, 16);
+}
+
+bool crealityParseRecord(const char* rec, CrealityTag* out) {
+  memset(out, 0, sizeof(*out));
+  out->brand = out->name = out->material = "";
+
+  // Every field is hex digits. A wrong key, or a tag of some other format
+  // that happens to open with it, decrypts to noise and fails right here.
+  if (!isHexStr(rec, 40)) return false;
+
+  memcpy(out->date,        rec + 0,  5); out->date[5] = '\0';
+  memcpy(out->vendor_id,   rec + 5,  4); out->vendor_id[4] = '\0';
+  memcpy(out->batch,       rec + 9,  2); out->batch[2] = '\0';
+  memcpy(out->filament_id, rec + 11, 6); out->filament_id[6] = '\0';
+  // rec + 17: "0" then RRGGBB
+  out->r = hexByte(rec + 18);
+  out->g = hexByte(rec + 20);
+  out->b = hexByte(rec + 22);
+  out->has_color = true;
+  out->weight_g = weightFromLength(rec + 24, &out->length_m);
+  memcpy(out->serial,      rec + 28, 6); out->serial[6] = '\0';
+
+  const CrealityMaterial* m = findMaterial(out->filament_id + 1);
+  if (m) {
+    out->brand    = m->brand;
+    out->name     = m->name;
+    out->material = m->material;
+    out->temp_min = m->temp_min;
+    out->temp_max = m->temp_max;
+  } else if (strcmp(out->vendor_id, "0276") == 0) {
+    out->brand = "Creality";
+  }
+  return true;
+}
+
+bool crealityDecode(const uint8_t sector1[3][16], CrealityTag* out) {
+  uint8_t enc[48], plain[48];
+  memcpy(enc, sector1, 48);
+  if (!crealityDecrypt48(enc, plain)) return false;
+  char rec[41];
+  memcpy(rec, plain, 40);
+  rec[40] = '\0';
+  return crealityParseRecord(rec, out);
+}
