@@ -180,9 +180,14 @@ bool crealityParseRecord(const char* rec, CrealityTag* out) {
   memset(out, 0, sizeof(*out));
   out->brand = out->name = out->material = "";
 
-  // Every field is hex digits. A wrong key, or a tag of some other format
-  // that happens to open with it, decrypts to noise and fails right here.
-  if (!isHexStr(rec, 40)) return false;
+  // Every field is hex digits, except the filament id: Creality's database
+  // has ids like E1001 (eSUN) and P1001 (Polymaker). A wrong key, or a tag of
+  // some other format that happens to open with it, decrypts to noise and
+  // fails right here.
+  if (!isHexStr(rec, 11) || !isHexStr(rec + 17, 23)) return false;
+  for (int i = 11; i < 17; i++) {
+    if (!isalnum((unsigned char)rec[i])) return false;
+  }
 
   memcpy(out->date,        rec + 0,  5); out->date[5] = '\0';
   memcpy(out->vendor_id,   rec + 5,  4); out->vendor_id[4] = '\0';
