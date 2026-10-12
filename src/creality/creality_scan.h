@@ -10,4 +10,6 @@ enum CrealityScanResult {
 // Reads sector 1 of a 4 byte MIFARE Classic tag with the key Creality derives
 // from its UID and, on success, fills g_tag the way the Snapmaker decoder
 // does, with g_tag.decoder set to "Creality".
-CrealityScanResult scanCrealityTag(uint8_t *uid, uint8_t uid_len);
+// fresh: the poll has just selected the card and no key has been tried on it,
+// so key A is tried straight away. Otherwise the card is woken first.
+CrealityScanResult scanCrealityTag(uint8_t *uid, uint8_t uid_len, bool fresh);

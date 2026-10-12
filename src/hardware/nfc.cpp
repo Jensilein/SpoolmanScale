@@ -50,37 +50,44 @@ bool nfcReadPassiveTarget(uint8_t* uid, uint8_t* uid_len, uint16_t timeout_ms) {
   return nfc && nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, uid_len, timeout_ms);
 }
 
-// One RFConfiguration "RF field" command. The library's sendCommandCheckAck()
-// returns once the response is ready but leaves it unread, which its own
-// callers then read with a private function. Left unread here, the next
-// command would be written over a pending response; that is the most likely
-// reason the first attempt at this (12.10.2026) left the chip unresponsive.
-// So the 9 byte response frame (00 00 FF 02 FE D5 33 F8 00), with the leading
-// ready byte, is read off the bus here and checked.
-static bool rfField(bool on) {
-  uint8_t cmd[3] = { 0x32 /* RFConfiguration */, 0x01 /* RF field */,
-                     (uint8_t)(on ? 0x01 : 0x00) };
-  if (!nfc->sendCommandCheckAck(cmd, 3)) return false;
-  if (!nfc_wire) return false;
-  uint8_t rx[10] = {0};
-  size_t got = nfc_wire->requestFrom((uint8_t)PN532_I2C_ADDRESS, (uint8_t)sizeof(rx));
+// Sends one command the library has no function for and reads its response
+// off the bus. sendCommandCheckAck() returns once the response is ready but
+// leaves it unread (its own callers read it with a private function); left
+// unread, the next command would be written over a pending response, which is
+// the likely reason the first field reset (12.10.2026) left the chip hanging.
+// resp_len is the frame length without the leading ready byte; the check is
+// on the response code (command + 1) at frame byte 6.
+static bool rawCommand(uint8_t* cmd, uint8_t cmd_len, uint8_t resp_len) {
+  if (!nfc || !nfc_wire) return false;
+  if (!nfc->sendCommandCheckAck(cmd, cmd_len)) return false;
+  uint8_t rx[16] = {0};
+  const uint8_t want = (uint8_t)(resp_len + 1);
+  if (want > sizeof(rx)) return false;
+  size_t got = nfc_wire->requestFrom((uint8_t)PN532_I2C_ADDRESS, want);
   for (size_t i = 0; i < got && i < sizeof(rx); i++) rx[i] = nfc_wire->read();
   while (nfc_wire->available()) nfc_wire->read();
-  // rx[0] is the ready byte, the frame starts at rx[1].
-  return got == sizeof(rx) && rx[0] == PN532_I2C_READY && rx[6] == 0xD5 && rx[7] == 0x33;
+  return got == want && rx[0] == PN532_I2C_READY && rx[6] == 0xD5 &&
+         rx[7] == (uint8_t)(cmd[0] + 1);
+}
+
+bool nfcInRelease() {
+  // InRelease, Tg 0 = every target. Response: 00 00 FF 03 FD D5 53 st DCS 00.
+  uint8_t cmd[2] = { 0x52, 0x00 };
+  return rawCommand(cmd, 2, 10);
 }
 
 uint8_t nfcRfFieldCycle() {
   if (!nfc) return 0;
+  // RFConfiguration, item 1 (RF field). Response: 00 00 FF 02 FE D5 33 F8 00.
+  // 20 ms off woke a halted Creality tag about every second time; 100 ms off
+  // did worse (12.10.2026), so the short gap stays.
   uint8_t r = 0;
-  // 20 ms off and 10 ms to settle worked for about every second wake on an
-  // original Creality spool (12.10.2026): the tag's capacitor carries it over
-  // a short gap and it stays halted. 100 ms off is far past that, and 50 ms
-  // after switching on gives it time to power up before it is spoken to.
-  if (rfField(false)) r |= NFC_RF_OFF_OK;
-  delay(100);
-  if (rfField(true))  r |= NFC_RF_ON_OK;
-  delay(50);
+  uint8_t off[3] = { 0x32, 0x01, 0x00 };
+  uint8_t on[3]  = { 0x32, 0x01, 0x01 };
+  if (rawCommand(off, 3, 9)) r |= NFC_RF_OFF_OK;
+  delay(20);
+  if (rawCommand(on, 3, 9))  r |= NFC_RF_ON_OK;
+  delay(10);
   if (nfc->getFirmwareVersion() != 0) r |= NFC_RF_CHIP_OK;
   return r;
 }

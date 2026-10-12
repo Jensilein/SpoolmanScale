@@ -23,6 +23,9 @@ bool nfcReadPassiveTarget(uint8_t* uid, uint8_t* uid_len, uint16_t timeout_ms);
 #define NFC_RF_ON_OK   0x02
 #define NFC_RF_CHIP_OK 0x04   // the reader still answers afterwards
 uint8_t nfcRfFieldCycle();
+// Drops every target the reader still holds (InRelease). After a refused key
+// the reader may keep the card as its current target and not list it again.
+bool nfcInRelease();
 // Which of a sector's two keys to authenticate with. The library takes zero
 // for key A and anything else for key B.
 #define NFC_KEY_A 0

@@ -1720,20 +1720,30 @@ void appLoop() {
           lv_obj_set_style_text_color(lbl_nfc_dot, lv_color_hex(0x28d49a), 0);
           lv_label_set_text(lbl_status, T(STR_READING_TAG));
           lv_obj_set_style_text_color(lbl_status, lv_color_hex(0x28d49a), 0);
-          scanTag(uid, uidLen);
+          // Creality CFS tags (K2 Plus and friends) go first, before the Bambu
+          // probe, on the card the poll has just selected. Tried after the
+          // Bambu probe, as it was until 12.10.2026, the refused Bambu keys
+          // left an original Creality tag unreachable and it opened only now
+          // and then. The Creality key is a single AES derivation from the
+          // UID, and a tag that opens with it is Creality's: no Bambu scan,
+          // no Snapmaker probe, and the branch below for a plain 4 byte card
+          // looks the spool up by its UID. A tag that does not open is woken
+          // again inside scanCrealityTag(), so the Bambu scan finds it.
+          if (g_creality_tags &&
+              scanCrealityTag(uid, uidLen, /*fresh=*/true) == CREALITY_SCAN_OK) {
+            creality_decoded = true;
+            nfc_retry_count = NFC_MAX_RETRIES;
+            last_nfc_check_ms = 0;
+          } else {
+            scanTag(uid, uidLen);
+          }
           // Opt-in, off by default, and then none of this touches the reader.
           // Once per placement, right after the first Bambu probe came back
           // with nothing. A tag that answers to Snapmaker's keys is no Bambu
           // tag, so the Bambu retries are skipped and the branch below for a
           // plain 4 byte card looks the spool up by its UID.
-          // Creality CFS tags (K2 Plus and friends) the same way, and first:
-          // the Creality key is a single AES derivation from the UID, and a
-          // tag that opens with it is Creality's, so Snapmaker is not tried.
-          if (g_creality_tags && countBambuDataBlocksRead(g_tag) == 0 &&
-              scanCrealityTag(uid, uidLen) == CREALITY_SCAN_OK) {
-            creality_decoded = true;
-            nfc_retry_count = NFC_MAX_RETRIES;
-            last_nfc_check_ms = 0;
+          if (creality_decoded) {
+            // Already settled above.
           } else if (g_snapmaker_tags && countBambuDataBlocksRead(g_tag) == 0 &&
               scanSnapmakerTag(uid, uidLen) != SNAPMAKER_SCAN_NO_AUTH) {
             snapmaker_decoded = true;
