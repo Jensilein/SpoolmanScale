@@ -50,6 +50,22 @@ bool nfcReadPassiveTarget(uint8_t* uid, uint8_t* uid_len, uint16_t timeout_ms) {
   return nfc && nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, uid_len, timeout_ms);
 }
 
+// Switches the RF field off and on again. A MIFARE Classic card that failed an
+// authentication drops out of the selected state and no longer answers a plain
+// InListPassiveTarget (REQA); without power it forgets that state, and once the
+// field is back it answers as if it had just been placed. Used before trying a
+// second family of keys on a card the first family was refused by.
+bool nfcRfFieldReset() {
+  if (!nfc) return false;
+  uint8_t cmd[3] = { 0x32 /* RFConfiguration */, 0x01 /* RF field */, 0x00 /* off */ };
+  bool ok = nfc->sendCommandCheckAck(cmd, 3);
+  delay(15);
+  cmd[2] = 0x01;  // on, AutoRFCA off
+  ok = nfc->sendCommandCheckAck(cmd, 3) && ok;
+  delay(10);
+  return ok;
+}
+
 static bool reselectMifareUid(const uint8_t expected_uid[4], uint16_t timeout_ms) {
   uint8_t uid[NFC_UID_MAX] = {0};
   uint8_t uid_len = 0;

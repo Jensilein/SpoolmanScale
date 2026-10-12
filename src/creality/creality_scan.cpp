@@ -18,20 +18,37 @@ CrealityScanResult scanCrealityTag(uint8_t *uid, uint8_t uid_len) {
   char uid_str[24];
   snprintf(uid_str, sizeof(uid_str), "%02X:%02X:%02X:%02X", uid[0], uid[1], uid[2], uid[3]);
 
-  uint8_t dummy_uid[NFC_UID_MAX];
-  uint8_t dummy_uid_len = 0;
-  nfcReadPassiveTarget(dummy_uid, &dummy_uid_len, 150); // Wake from HALT
-
+  // The Bambu probe ran first and every sector refused it. A MIFARE Classic
+  // card that failed an authentication goes quiet and a plain wake (REQA) does
+  // not bring it back: on hardware (12.10.2026) an original Creality spool was
+  // reported "removed" 1.6 s after placing, and the derived key never got a
+  // chance. So the field is cycled before each try, which resets the card.
+  //
   // Creality's own spools and the current writers set key A and key B to the
   // same derived key. FilaStation up to v2.10 set only key B, so that is the
   // second try. As with Snapmaker, no key goes to the log.
+  uint8_t dummy_uid[NFC_UID_MAX];
+  uint8_t dummy_uid_len = 0;
   uint8_t blocks[4][16];
-  bool ok = nfcReadMifareSector(1, key, uid, blocks, NFC_KEY_A);
+  bool woke_a = false, woke_b = false;
+
+  nfcRfFieldReset();
+  woke_a = nfcReadPassiveTarget(dummy_uid, &dummy_uid_len, 150);
+  bool ok = woke_a && nfcReadMifareSector(1, key, uid, blocks, NFC_KEY_A);
   if (!ok) {
-    nfcReadPassiveTarget(dummy_uid, &dummy_uid_len, 150);
-    ok = nfcReadMifareSector(1, key, uid, blocks, NFC_KEY_B);
+    nfcRfFieldReset();
+    woke_b = nfcReadPassiveTarget(dummy_uid, &dummy_uid_len, 150);
+    ok = woke_b && nfcReadMifareSector(1, key, uid, blocks, NFC_KEY_B);
   }
-  if (!ok) return CREALITY_SCAN_NO_AUTH;
+  if (!ok) {
+    logSDf("NFC: %s not opened with the Creality key (card answered: A=%s, B=%s)",
+           uid_str, woke_a ? "yes" : "no", woke_b ? "yes" : "no");
+    // Leave the card awake for whoever looks next (Snapmaker probe, then the
+    // UID lookup in the backend), or it reads as removed.
+    nfcRfFieldReset();
+    nfcReadPassiveTarget(dummy_uid, &dummy_uid_len, 150);
+    return CREALITY_SCAN_NO_AUTH;
+  }
 
   CrealityTag t;
   if (!crealityDecode(blocks, &t)) {
