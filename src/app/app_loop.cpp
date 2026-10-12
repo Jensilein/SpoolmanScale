@@ -21,6 +21,7 @@
 #include "bambu/bambu_tag.h"
 #include "snapmaker/snapmaker_scan.h"
 #include "creality/creality_scan.h"
+#include "services/tag_family.h"
 #include "hardware/display_power.h"
 #include "hardware/nfc.h"
 #include "hardware/scale.h"
@@ -1720,21 +1721,31 @@ void appLoop() {
           lv_obj_set_style_text_color(lbl_nfc_dot, lv_color_hex(0x28d49a), 0);
           lv_label_set_text(lbl_status, T(STR_READING_TAG));
           lv_obj_set_style_text_color(lbl_status, lv_color_hex(0x28d49a), 0);
-          // Creality CFS tags (K2 Plus and friends) go first, before the Bambu
-          // probe, on the card the poll has just selected. Tried after the
-          // Bambu probe, as it was until 12.10.2026, the refused Bambu keys
-          // left an original Creality tag unreachable and it opened only now
-          // and then. The Creality key is a single AES derivation from the
-          // UID, and a tag that opens with it is Creality's: no Bambu scan,
+          // Which family to try first. A refused key leaves the card
+          // unreachable for a while (12.10.2026: Creality tags tried after the
+          // Bambu probe opened only now and then), so the first try has to be
+          // the right one. Known tags go straight to their family; see
+          // services/tag_family.h. An unknown tag gets Creality first when
+          // that is enabled: the key is a single AES derivation from the UID
+          // and a tag that opens with it is Creality's, so no Bambu scan and
           // no Snapmaker probe, and the branch below for a plain 4 byte card
           // looks the spool up by its UID. A tag that does not open is woken
-          // again inside scanCrealityTag(), so the Bambu scan finds it.
-          if (g_creality_tags &&
+          // again inside scanCrealityTag(), so the Bambu scan still finds it.
+          const TagFamily family = tagFamilyGet(uid);
+          const bool creality_first = g_creality_tags &&
+              (family == TAG_FAMILY_UNKNOWN || family == TAG_FAMILY_CREALITY);
+          if (creality_first &&
               scanCrealityTag(uid, uidLen, /*fresh=*/true) == CREALITY_SCAN_OK) {
             creality_decoded = true;
+            tagFamilySet(uid, TAG_FAMILY_CREALITY);
             nfc_retry_count = NFC_MAX_RETRIES;
             last_nfc_check_ms = 0;
           } else {
+            // Bambu next time, unless the Bambu read fails as well (see the
+            // branch for a plain card below, which forgets this again).
+            if (creality_first && family == TAG_FAMILY_UNKNOWN) {
+              tagFamilySet(uid, TAG_FAMILY_NOT_CREALITY);
+            }
             scanTag(uid, uidLen);
           }
           // Opt-in, off by default, and then none of this touches the reader.
@@ -1785,6 +1796,9 @@ void appLoop() {
           // says what the scale concluded: Bambu once any sector has read,
           // MIFARE once the retries are spent with nothing. In between,
           // while the retries run, nothing is logged yet.
+          // Read as Bambu: remember it, so the next placement goes straight
+          // to the Bambu scan. No write when it is already known.
+          if (bambu_blocks_read > 0) tagFamilySet(uid, TAG_FAMILY_BAMBU);
           if (bambu_blocks_read > 0 || nfc_retry_count >= NFC_MAX_RETRIES) {
             TagSeen::note(uid_str, bambu_blocks_read > 0 ? "Bambu"
                                    : creality_decoded    ? "Creality"
@@ -1805,6 +1819,12 @@ void appLoop() {
             // real Bambu tag that only read partially still has dozens of
             // blocks and belongs in the branch above, where "waiting" is the
             // honest answer rather than "not in Spoolman".
+            // Refused the Creality key earlier and now Bambu as well: the
+            // first verdict may have been a badly placed tag, so the next
+            // placement tries Creality first again.
+            if (!creality_decoded && tagFamilyGet(uid) == TAG_FAMILY_NOT_CREALITY) {
+              tagFamilySet(uid, TAG_FAMILY_UNKNOWN);
+            }
             if (wifi_ok && !isSpoolFlowIdInputOpen() && !isSecondTagPopupOpen() &&
                 strcmp(uid_str, spoolman_queried_uid) != 0) {
               querySpoolman(uid_str, LOOKUP_FROM_UID);

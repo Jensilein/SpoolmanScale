@@ -67,7 +67,26 @@ jobs:
       - name: Install PlatformIO
         run: pip install --upgrade platformio
       - name: Build
-        run: pio run -e ${{ matrix.env }}
+        shell: bash
+        run: |
+          set -o pipefail
+          pio run -e ${{ matrix.env }} 2>&1 | tee pio-build.log
+      # What the build actually did, as a notice on the run: how many files it
+      # compiled, whether PlatformIO threw the build directory away, and
+      # whether the ESP-IDF core was rebuilt. Tells whether the cache above
+      # is doing its job without anyone having to read the whole log.
+      - name: Build statistics
+        if: always()
+        shell: bash
+        run: |
+          [ -f pio-build.log ] || exit 0
+          compiled=$(grep -c '^Compiling ' pio-build.log || true)
+          cleaned=$(grep -ciE 'outdated|cleaning' pio-build.log || true)
+          idf=$(grep -ciE 'sdkconfig|esp-idf|hybrid|reconfigur' pio-build.log || true)
+          echo "::notice title=Build statistics::compiled=$compiled cleaned=$cleaned idf_lines=$idf"
+          grep -iE 'outdated|cleaning|sdkconfig changed|Building in release|framework.*(compil|build)' pio-build.log | head -15 | while read -r l; do
+            echo "::notice title=Build line::$l"
+          done
       - name: Refuse a binary an installed device could not take
         # Every device flashed so far has a 3 MB app slot, and OTA never
         # rewrites the partition table. A larger binary would be refused by
