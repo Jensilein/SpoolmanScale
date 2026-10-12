@@ -73,10 +73,14 @@ static bool rfField(bool on) {
 uint8_t nfcRfFieldCycle() {
   if (!nfc) return 0;
   uint8_t r = 0;
+  // 20 ms off and 10 ms to settle worked for about every second wake on an
+  // original Creality spool (12.10.2026): the tag's capacitor carries it over
+  // a short gap and it stays halted. 100 ms off is far past that, and 50 ms
+  // after switching on gives it time to power up before it is spoken to.
   if (rfField(false)) r |= NFC_RF_OFF_OK;
-  delay(20);
+  delay(100);
   if (rfField(true))  r |= NFC_RF_ON_OK;
-  delay(10);
+  delay(50);
   if (nfc->getFirmwareVersion() != 0) r |= NFC_RF_CHIP_OK;
   return r;
 }

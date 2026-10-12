@@ -34,9 +34,9 @@ CrealityScanResult scanCrealityTag(uint8_t *uid, uint8_t uid_len) {
   uint8_t dummy_uid_len = 0;
   uint8_t blocks[4][16];
 
-  // Returns how the card answered: 1 = plain wake, 2 = after a field cycle,
-  // 0 = not at all. The field cycle result is logged once per scan.
-  bool cycled = false;
+  // Returns how the card answered: 1 = plain wake, n+1 = after n field
+  // cycles, 0 = not at all. Up to three cycles: one was enough only about
+  // every second time. Each cycle is logged with what worked.
   bool reader_silent = false;
   auto same_card = [&]() -> bool {
     dummy_uid_len = 0;
@@ -45,21 +45,21 @@ CrealityScanResult scanCrealityTag(uint8_t *uid, uint8_t uid_len) {
   };
   auto wake = [&]() -> int {
     if (same_card()) return 1;
-    uint8_t rf = nfcRfFieldCycle();
-    if (!cycled) {
-      cycled = true;
-      logSDf("NFC: %s no answer to a wake, field cycled (off=%s on=%s reader=%s)",
-             uid_str, (rf & NFC_RF_OFF_OK) ? "ok" : "fail",
-             (rf & NFC_RF_ON_OK) ? "ok" : "fail",
-             (rf & NFC_RF_CHIP_OK) ? "answers" : "SILENT");
+    for (int cycle = 1; cycle <= 3; cycle++) {
+      uint8_t rf = nfcRfFieldCycle();
+      if (!(rf & NFC_RF_CHIP_OK)) {   // do not pile more commands on it
+        logSDf("NFC: %s field cycle %d left the reader SILENT (off=%s on=%s)",
+               uid_str, cycle, (rf & NFC_RF_OFF_OK) ? "ok" : "fail",
+               (rf & NFC_RF_ON_OK) ? "ok" : "fail");
+        reader_silent = true;
+        return 0;
+      }
+      if (same_card()) return cycle + 1;
+      delay(30);
+      if (same_card()) return cycle + 1;
     }
-    if (!(rf & NFC_RF_CHIP_OK)) {   // do not pile more commands on it
-      reader_silent = true;
-      return 0;
-    }
-    if (same_card()) return 2;
-    delay(30);
-    return same_card() ? 2 : 0;
+    logSDf("NFC: %s no answer after 3 field cycles", uid_str);
+    return 0;
   };
 
   int woke_a = wake();
@@ -71,7 +71,7 @@ CrealityScanResult scanCrealityTag(uint8_t *uid, uint8_t uid_len) {
     ok_b = woke_b && nfcReadMifareSector(1, key, uid, blocks, NFC_KEY_B);
   }
   if (!ok_a && !ok_b) {
-    // woke: 1 = answered a plain wake, 2 = only after a field cycle, 0 = never.
+    // woke: 1 = answered a plain wake, n+1 = after n field cycles, 0 = never.
     logSDf("NFC: %s not opened with the Creality key (key A: woke=%d read=no, key B: woke=%d read=no)",
            uid_str, woke_a, woke_b);
     return CREALITY_SCAN_NO_AUTH;
