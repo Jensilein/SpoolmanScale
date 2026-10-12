@@ -1755,6 +1755,15 @@ void appLoop() {
             tagFamilySet(uid, TAG_FAMILY_CREALITY);
             nfc_retry_count = NFC_MAX_RETRIES;
             last_nfc_check_ms = 0;
+          } else if (g_creality_tags && family == TAG_FAMILY_CREALITY) {
+            // A known Creality tag that did not open this time - one side of a
+            // spool lying badly on the pad (12.10.2026). The Bambu scan would
+            // only refuse it again. Start a clean record for this UID instead,
+            // so the retries below try Creality again on the next polls, and
+            // when they run out the spool is still looked up by its UID.
+            memset(&g_tag, 0, sizeof(g_tag));
+            memcpy(g_tag.uid, uid, 4);
+            snprintf(g_tag.uid_str, sizeof(g_tag.uid_str), "%s", uid_str);
           } else {
             // Bambu first on the next placement (once, see above).
             if (creality_first && family == TAG_FAMILY_UNKNOWN) {
@@ -1804,7 +1813,17 @@ void appLoop() {
           lv_obj_set_style_text_color(lbl_nfc_dot, lv_color_hex(0x28d49a), 0);
           lv_label_set_text(lbl_status, T(STR_READING_TAG));
           lv_obj_set_style_text_color(lbl_status, lv_color_hex(0x28d49a), 0);
-          scanTag(uid, uidLen);
+          if (g_creality_tags && tagFamilyGet(uid) == TAG_FAMILY_CREALITY) {
+            // A known Creality tag gets its own key again, on the card this
+            // poll has just selected, rather than the Bambu scan.
+            if (scanCrealityTag(uid, uidLen, /*fresh=*/true) == CREALITY_SCAN_OK) {
+              creality_decoded = true;
+              nfc_retry_count = NFC_MAX_RETRIES;
+              last_nfc_check_ms = 0;
+            }
+          } else {
+            scanTag(uid, uidLen);
+          }
         } else {
           // The "Tag placed" line waits until the scan has settled, so it
           // says what the scale concluded: Bambu once any sector has read,
