@@ -50,6 +50,37 @@ bool nfcReadPassiveTarget(uint8_t* uid, uint8_t* uid_len, uint16_t timeout_ms) {
   return nfc && nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, uid_len, timeout_ms);
 }
 
+// One RFConfiguration "RF field" command. The library's sendCommandCheckAck()
+// returns once the response is ready but leaves it unread, which its own
+// callers then read with a private function. Left unread here, the next
+// command would be written over a pending response; that is the most likely
+// reason the first attempt at this (12.10.2026) left the chip unresponsive.
+// So the 9 byte response frame (00 00 FF 02 FE D5 33 F8 00), with the leading
+// ready byte, is read off the bus here and checked.
+static bool rfField(bool on) {
+  uint8_t cmd[3] = { 0x32 /* RFConfiguration */, 0x01 /* RF field */,
+                     (uint8_t)(on ? 0x01 : 0x00) };
+  if (!nfc->sendCommandCheckAck(cmd, 3)) return false;
+  if (!nfc_wire) return false;
+  uint8_t rx[10] = {0};
+  size_t got = nfc_wire->requestFrom((uint8_t)PN532_I2C_ADDRESS, (uint8_t)sizeof(rx));
+  for (size_t i = 0; i < got && i < sizeof(rx); i++) rx[i] = nfc_wire->read();
+  while (nfc_wire->available()) nfc_wire->read();
+  // rx[0] is the ready byte, the frame starts at rx[1].
+  return got == sizeof(rx) && rx[0] == PN532_I2C_READY && rx[6] == 0xD5 && rx[7] == 0x33;
+}
+
+uint8_t nfcRfFieldCycle() {
+  if (!nfc) return 0;
+  uint8_t r = 0;
+  if (rfField(false)) r |= NFC_RF_OFF_OK;
+  delay(20);
+  if (rfField(true))  r |= NFC_RF_ON_OK;
+  delay(10);
+  if (nfc->getFirmwareVersion() != 0) r |= NFC_RF_CHIP_OK;
+  return r;
+}
+
 static bool reselectMifareUid(const uint8_t expected_uid[4], uint16_t timeout_ms) {
   uint8_t uid[NFC_UID_MAX] = {0};
   uint8_t uid_len = 0;

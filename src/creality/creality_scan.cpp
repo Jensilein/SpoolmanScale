@@ -19,12 +19,13 @@ CrealityScanResult scanCrealityTag(uint8_t *uid, uint8_t uid_len) {
   snprintf(uid_str, sizeof(uid_str), "%02X:%02X:%02X:%02X", uid[0], uid[1], uid[2], uid[3]);
 
   // The Bambu probe ran first and every sector refused it, so the card has to
-  // be selected again before the derived key can be tried. That is the same
-  // plain wake the Snapmaker probe uses. A field reset (RFConfiguration off/on)
-  // was tried here on 12.10.2026 and made it worse: the reader stopped finding
-  // the card at all and briefly dropped off the bus. Instead the wake is
-  // retried, and every step goes to the log, so a tag that does not open says
-  // where it stopped.
+  // be selected again before the derived key can be tried. On hardware
+  // (12.10.2026) an original Creality spool did not answer a plain wake (REQA)
+  // at all afterwards, three times in a row: a refused key leaves it halted,
+  // and only losing power brings it back. So when the plain wake gets no
+  // answer, the RF field is switched off and on and the wake tried again.
+  // A first attempt at that left the reader hanging; nfcRfFieldCycle() now
+  // reads each response off the bus and reports which step worked.
   //
   // Creality's own spools and the current writers set key A and key B to the
   // same derived key. FilaStation up to v2.10 set only key B, so that is the
@@ -33,33 +34,49 @@ CrealityScanResult scanCrealityTag(uint8_t *uid, uint8_t uid_len) {
   uint8_t dummy_uid_len = 0;
   uint8_t blocks[4][16];
 
+  // Returns how the card answered: 1 = plain wake, 2 = after a field cycle,
+  // 0 = not at all. The field cycle result is logged once per scan.
+  bool cycled = false;
+  bool reader_silent = false;
+  auto same_card = [&]() -> bool {
+    dummy_uid_len = 0;
+    return nfcReadPassiveTarget(dummy_uid, &dummy_uid_len, 300) &&
+           dummy_uid_len == 4 && memcmp(dummy_uid, uid, 4) == 0;
+  };
   auto wake = [&]() -> int {
-    for (int i = 1; i <= 3; i++) {
-      dummy_uid_len = 0;
-      if (nfcReadPassiveTarget(dummy_uid, &dummy_uid_len, 300) &&
-          dummy_uid_len == 4 && memcmp(dummy_uid, uid, 4) == 0) {
-        return i;   // answered on try i
-      }
-      delay(20);
+    if (same_card()) return 1;
+    uint8_t rf = nfcRfFieldCycle();
+    if (!cycled) {
+      cycled = true;
+      logSDf("NFC: %s no answer to a wake, field cycled (off=%s on=%s reader=%s)",
+             uid_str, (rf & NFC_RF_OFF_OK) ? "ok" : "fail",
+             (rf & NFC_RF_ON_OK) ? "ok" : "fail",
+             (rf & NFC_RF_CHIP_OK) ? "answers" : "SILENT");
     }
-    return 0;
+    if (!(rf & NFC_RF_CHIP_OK)) {   // do not pile more commands on it
+      reader_silent = true;
+      return 0;
+    }
+    if (same_card()) return 2;
+    delay(30);
+    return same_card() ? 2 : 0;
   };
 
   int woke_a = wake();
   bool ok_a = woke_a && nfcReadMifareSector(1, key, uid, blocks, NFC_KEY_A);
   int woke_b = 0;
   bool ok_b = false;
-  if (!ok_a) {
+  if (!ok_a && !reader_silent) {
     woke_b = wake();
     ok_b = woke_b && nfcReadMifareSector(1, key, uid, blocks, NFC_KEY_B);
   }
   if (!ok_a && !ok_b) {
-    // woke = on which wake attempt the card answered (0 = never).
+    // woke: 1 = answered a plain wake, 2 = only after a field cycle, 0 = never.
     logSDf("NFC: %s not opened with the Creality key (key A: woke=%d read=no, key B: woke=%d read=no)",
            uid_str, woke_a, woke_b);
     return CREALITY_SCAN_NO_AUTH;
   }
-  logSDf("NFC: %s opened with the Creality key (%s, woke on try %d)",
+  logSDf("NFC: %s opened with the Creality key (%s, woke=%d)",
          uid_str, ok_a ? "key A" : "key B", ok_a ? woke_a : woke_b);
 
   CrealityTag t;
