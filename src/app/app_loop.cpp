@@ -1622,6 +1622,7 @@ void appLoop() {
     static bool bambu_uid_probed = false;   // see NFC_UID_PROBE_AFTER_RETRIES
     static bool snapmaker_decoded = false;  // this placement read as a Snapmaker tag
     static bool creality_decoded = false;   // this placement read as a Creality CFS tag
+    static bool new_placement = false;      // same tag back after a long absence
     static unsigned long last_nfc_stats_ms = 0;
     static uint8_t last_uid_len = 0;   // 4 = Bambu, 7 = NTAG, for the removal delay
 
@@ -1650,6 +1651,11 @@ void appLoop() {
           if (millis() - tag_absent_since_ms > NFC_RETRY_RESET_ABSENT_MS) {
             nfc_retry_count = 0;
             bambu_uid_probed = false;
+            // Back after a long absence: a new placement, even of the same
+            // tag. It goes through the family choice below like a new UID;
+            // until 12.10.2026 it only re-ran the Bambu scan, so a Creality
+            // tag put back after ten seconds was never tried with its key.
+            new_placement = true;
           }
           tag_absent_since_ms = 0;
         }
@@ -1698,7 +1704,8 @@ void appLoop() {
         snprintf(uid_str, sizeof(uid_str), "%02X:%02X:%02X:%02X",
           uid[0], uid[1], uid[2], uid[3]);
 
-        bool uid_changed = (strcmp(uid_str, g_tag.uid_str) != 0);
+        bool uid_changed = new_placement || (strcmp(uid_str, g_tag.uid_str) != 0);
+        new_placement = false;
         int bambu_blocks_read = countBambuDataBlocksRead(g_tag);
         bool uuid_missing = (strlen(g_tag.tray_uuid) < 32);
         bool contents_incomplete = (bambu_blocks_read < 48);
