@@ -16,8 +16,6 @@ bool nfcHardwareReinit(uint32_t* firmware_version = nullptr);
 // a triple size card wrote three bytes past it, onto the loop task's stack.
 #define NFC_UID_MAX 10
 bool nfcReadPassiveTarget(uint8_t* uid, uint8_t* uid_len, uint16_t timeout_ms);
-// RF field off and on: a card left halted by a refused key answers again.
-bool nfcRfFieldReset();
 // Which of a sector's two keys to authenticate with. The library takes zero
 // for key A and anything else for key B.
 #define NFC_KEY_A 0
