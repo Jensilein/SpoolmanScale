@@ -15,10 +15,12 @@
 //    TAG_FAMILY_UNKNOWN       never read: Creality first (when enabled)
 //    TAG_FAMILY_CREALITY      opened with the Creality key
 //    TAG_FAMILY_BAMBU         read as a Bambu tag
-//    TAG_FAMILY_NOT_CREALITY  refused the Creality key this session: Bambu
-//                             first. Kept in RAM only, and dropped again when
-//                             the Bambu read fails too, so a tag that was
-//                             merely badly placed gets Creality next time.
+//    TAG_FAMILY_NOT_CREALITY  refused the Creality key on the last placement:
+//                             Bambu first on the next one. RAM only, and used
+//                             once: the next placement drops it, so an unknown
+//                             tag alternates Creality first / Bambu first until
+//                             one of them reads it. A Creality tag that was
+//                             merely badly placed gets Creality again.
 //
 //  Creality and Bambu are stored in NVS (one string, at most 48 UIDs, the
 //  oldest dropped first) and survive a restart. A write happens only when a

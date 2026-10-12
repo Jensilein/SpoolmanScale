@@ -1734,6 +1734,14 @@ void appLoop() {
           const TagFamily family = tagFamilyGet(uid);
           const bool creality_first = g_creality_tags &&
               (family == TAG_FAMILY_UNKNOWN || family == TAG_FAMILY_CREALITY);
+          // An unknown tag alternates between placements: Creality first, then
+          // Bambu first, then Creality again, until one family reads it. On
+          // hardware (12.10.2026) one side of a Creality spool refused key A on
+          // the first try, was marked for Bambu, and never got Creality again:
+          // the mark was only dropped once the Bambu retries ran out, and a tag
+          // that keeps dropping out never runs them out. So the mark is used
+          // once and dropped right here.
+          if (family == TAG_FAMILY_NOT_CREALITY) tagFamilySet(uid, TAG_FAMILY_UNKNOWN);
           if (creality_first &&
               scanCrealityTag(uid, uidLen, /*fresh=*/true) == CREALITY_SCAN_OK) {
             creality_decoded = true;
@@ -1741,8 +1749,7 @@ void appLoop() {
             nfc_retry_count = NFC_MAX_RETRIES;
             last_nfc_check_ms = 0;
           } else {
-            // Bambu next time, unless the Bambu read fails as well (see the
-            // branch for a plain card below, which forgets this again).
+            // Bambu first on the next placement (once, see above).
             if (creality_first && family == TAG_FAMILY_UNKNOWN) {
               tagFamilySet(uid, TAG_FAMILY_NOT_CREALITY);
             }
@@ -1819,12 +1826,6 @@ void appLoop() {
             // real Bambu tag that only read partially still has dozens of
             // blocks and belongs in the branch above, where "waiting" is the
             // honest answer rather than "not in Spoolman".
-            // Refused the Creality key earlier and now Bambu as well: the
-            // first verdict may have been a badly placed tag, so the next
-            // placement tries Creality first again.
-            if (!creality_decoded && tagFamilyGet(uid) == TAG_FAMILY_NOT_CREALITY) {
-              tagFamilySet(uid, TAG_FAMILY_UNKNOWN);
-            }
             if (wifi_ok && !isSpoolFlowIdInputOpen() && !isSecondTagPopupOpen() &&
                 strcmp(uid_str, spoolman_queried_uid) != 0) {
               querySpoolman(uid_str, LOOKUP_FROM_UID);
