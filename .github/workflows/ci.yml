@@ -44,6 +44,22 @@ jobs:
             ~/.cache/pip
             ~/.platformio/.cache
           key: ${{ runner.os }}-pio-${{ hashFiles('**/platformio.ini') }}
+      # The cache above only holds downloads, so every run compiled the whole
+      # firmware and the ESP32 core again: about 12 minutes for a one line
+      # change. This one keeps the installed toolchain and the object files.
+      # A new key per run saves what this run built; restore-keys picks up the
+      # newest one for the same platformio.ini. SCons decides by content, so a
+      # fresh checkout does not make unchanged sources look new.
+      - name: Cache PlatformIO toolchain and build output
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio/packages
+            ~/.platformio/platforms
+            .pio
+          key: ${{ runner.os }}-pio-build-${{ matrix.env }}-${{ hashFiles('**/platformio.ini') }}-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-pio-build-${{ matrix.env }}-${{ hashFiles('**/platformio.ini') }}-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
