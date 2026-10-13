@@ -1464,8 +1464,9 @@ bool tagCrealityCheck(int spool_id, const char* uid_str, bool* own, bool* differ
   *own = nfcUidListHas(list, hex);
   // Everything but the date: vendor, batch, filament, colour, length, serial.
   *differs = memcmp(on_tag + 5, want + 5, 29) != 0;
-  logSDf("CFS check: %s spool %d, %s tag, tag %.29s, Spoolman %.29s%s", uid_str, spool_id,
-         *own ? "own" : "foreign", on_tag + 5, want + 5, *differs ? " - differs" : "");
+  logSDf("CFS check: %s spool %d, %s tag (nfc_uid '%s'), tag %.29s, Spoolman %.29s%s", uid_str,
+         spool_id, *own ? "own" : "foreign", sp["extra"]["nfc_uid"].isNull() ? "<none>" : list,
+         on_tag + 5, want + 5, *differs ? " - differs" : "");
   return true;
 }
 
