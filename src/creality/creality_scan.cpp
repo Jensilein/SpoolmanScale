@@ -221,6 +221,30 @@ static bool waitForCard(uint8_t uid[NFC_UID_MAX], uint8_t* uid_len,
   return false;
 }
 
+// Waits up to 20 s for the card and reads sector 1 with the Creality key the
+// moment it answers a poll - exactly what the main poll does, and the one
+// moment a weakly placed tag reliably opens (13.10.2026: read 0.7 s after
+// being put down, 6E:C6:DB:4F refused its key every time). A refused read
+// leaves the card silent until it is put down again, so the loop just keeps
+// polling for that.
+static bool waitAndRead(const uint8_t* uid_in, uint8_t key[6], uint8_t blocks[4][16],
+                        CrealityWaitFn wait) {
+  uint8_t uid[4];
+  memcpy(uid, uid_in, 4);
+  wait(0);
+  const unsigned long t0 = millis();
+  while (millis() - t0 < 20000) {
+    uint8_t got[NFC_UID_MAX];
+    uint8_t got_len = 0;
+    if (nfcReadPassiveTarget(got, &got_len, 150) && got_len == 4 && memcmp(got, uid, 4) == 0) {
+      if (nfcReadMifareSector(1, key, uid, blocks, NFC_KEY_A)) return true;
+    }
+    wait(1);
+    delay(20);
+  }
+  return false;
+}
+
 // Reads sector 1 back with the UID's key and compares it with what was
 // written. A card that has gone quiet after the write is read once it has
 // been put back.
@@ -230,21 +254,19 @@ static CrealityWriteResult verifyWritten(const uint8_t* uid, const char* uid_str
                                          bool silent) {
   uint8_t u[4];
   memcpy(u, uid, 4);
+  uint8_t back[4][16];
+  bool read = false;
   int woke = silent ? 0 : wakeCard(u, uid_str, &silent);
-  if (!woke) {
-    uint8_t again[NFC_UID_MAX];
-    uint8_t again_len = 0;
+  if (woke && !silent) read = nfcReadMifareSector(1, key, u, back, NFC_KEY_A);
+  if (!read && wait) {
     silent = false;
     logSDf("CFS write: %s written, waiting for it to answer for the check", uid_str);
-    if (waitForCard(again, &again_len, u, wait)) woke = 1;
+    read = waitAndRead(u, key, back, wait);
   }
-  uint8_t back[4][16];
-  bool verified = false;
-  if (woke && !silent && nfcReadMifareSector(1, key, u, back, NFC_KEY_A)) {
-    verified = memcmp(back[0], cipher, 16) == 0 &&
-               memcmp(back[1], cipher + 16, 16) == 0 &&
-               memcmp(back[2], cipher + 32, 16) == 0;
-  }
+  const bool verified = read &&
+                        memcmp(back[0], cipher, 16) == 0 &&
+                        memcmp(back[1], cipher + 16, 16) == 0 &&
+                        memcmp(back[2], cipher + 32, 16) == 0;
   if (!silent) wakeCard(u, uid_str, &silent);
   if (!verified) {
     logSDf("CFS write: %s did not read back as written", uid_str);
@@ -302,6 +324,14 @@ CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4],
     delay(30);
     found = nfcReadPassiveTarget(uid, &uid_len, 300) && right_card();
   }
+  // An overwrite reads the tag the moment it answers again (below), the way
+  // the main poll reads it; nothing more is asked of it here.
+  bool deferred = false;
+  if (!found && overwrite && expect && wait) {
+    memcpy(uid, expect, 4);
+    uid_len = 4;
+    found = deferred = true;
+  }
   if (!found) {
     logSD("CFS write: tag does not answer, waiting for the spool to be put back");
     found = waitForCard(uid, &uid_len, expect, wait);
@@ -331,13 +361,11 @@ CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4],
   //    goes on to the factory key below.
   if (overwrite) {
     uint8_t blocks[4][16];
-    bool ok = nfcReadMifareSector(1, key, uid, blocks, NFC_KEY_A);
-    for (int again = 0; !ok && again < 2 && wait; again++) {
-      logSDf("CFS write: %s did not open with the Creality key - asking for it again", uid_str);
-      uint8_t got[NFC_UID_MAX];
-      uint8_t got_len = 0;
-      if (!waitForCard(got, &got_len, uid, wait)) break;
-      ok = nfcReadMifareSector(1, key, uid, blocks, NFC_KEY_A);
+    bool ok = !deferred && nfcReadMifareSector(1, key, uid, blocks, NFC_KEY_A);
+    if (!ok && wait) {
+      logSDf("CFS write: %s does not answer with the Creality key, waiting for the spool to be put back",
+             uid_str);
+      ok = waitAndRead(uid, key, blocks, wait);
     }
     if (ok) {
       CrealityTag t;
