@@ -64,6 +64,7 @@
 #include "ui/ams_detail_popup.h"
 #include "ui/status_picker.h"
 #include "ui/ams_view.h"
+#include "ui/ui_common.h"
 #include "services/wifi_manager.h"
 #include "services/wifi_roam.h"
 #include "services/backend_job.h"
