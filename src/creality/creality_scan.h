@@ -13,3 +13,9 @@ enum CrealityScanResult {
 // fresh: the poll has just selected the card and no key has been tried on it,
 // so key A is tried straight away. Otherwise the card is woken first.
 CrealityScanResult scanCrealityTag(uint8_t *uid, uint8_t uid_len, bool fresh);
+
+// A Creality tag that was on the reader and stopped answering the polls is
+// woken (release, then up to two field cycles). Same return codes as the
+// "woke" in the log: 0 = no answer, 1 = plain wake, 2 = after release,
+// 3/4 = after field cycles.
+int crealityRecoverCard(const uint8_t uid[4], const char* uid_str);

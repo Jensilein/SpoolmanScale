@@ -142,3 +142,8 @@ CrealityScanResult scanCrealityTag(uint8_t *uid, uint8_t uid_len, bool fresh) {
   g_tag_ready = true;
   return CREALITY_SCAN_OK;
 }
+
+int crealityRecoverCard(const uint8_t uid[4], const char* uid_str) {
+  bool silent = false;
+  return wakeCard(uid, uid_str, &silent);
+}

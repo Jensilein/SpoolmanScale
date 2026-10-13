@@ -1991,7 +1991,37 @@ void appLoop() {
 
       } else {
         // No tag found
-        if (tag_present) {
+        // A Creality tag that was read and then stops answering is most often
+        // still lying there: on hardware (13.10.2026) it went quiet right after
+        // the read and the spool was declared removed while it sat on the pad.
+        // Wake it before counting the miss; at most every 400 ms, so a spool
+        // that really left costs a few wake attempts and not more.
+        static unsigned long last_presence_recover_ms = 0;
+        static char recover_uid[24] = "";
+        static int recover_count = 0;
+        bool recovered = false;
+        if (tag_present && creality_decoded && last_uid_len == 4 &&
+            millis() - last_presence_recover_ms >= 400) {
+          last_presence_recover_ms = millis();
+          const int w = crealityRecoverCard(g_tag.uid, g_tag.uid_str);
+          if (strcmp(recover_uid, g_tag.uid_str) != 0) {
+            snprintf(recover_uid, sizeof(recover_uid), "%s", g_tag.uid_str);
+            recover_count = 0;
+          }
+          if (w) {
+            recovered = true;
+            if (++recover_count <= 3 || recover_count % 50 == 0) {
+              logSDf("NFC: %s stopped answering, woken again (woke=%d, %d so far)",
+                     g_tag.uid_str, w, recover_count);
+            }
+          }
+        }
+        if (recovered) {
+          last_tag_seen_ms = millis();
+          nfc_fast_polls = 0;
+          nfc_miss_streak = 0;
+          nfc_absent_count = 0;
+        } else if (tag_present) {
           // First close the gap with a few short-interval retries. Most NTAG
           // dropouts are a single missed read and come back on the next one.
           // Neither branch leaves appLoop() early any more: the two returns
