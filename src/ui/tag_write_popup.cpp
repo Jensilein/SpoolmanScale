@@ -41,6 +41,14 @@ static AskMode  s_mode          = ASK_WRITE;
 // The format the open question writes: the setting, or Creality CFS for a
 // blank MIFARE tag that was just linked.
 static uint8_t  s_write_fmt     = 0;
+// The tag the CFS write was last offered for, so it is offered once per tag
+// and not on every poll. Cleared when that write found no tag, so putting the
+// spool back offers it again.
+static char     s_cfs_asked_uid[24] = "";
+
+bool tagCfsAskedFor(const char *uid) {
+  return uid && uid[0] && strcmp(s_cfs_asked_uid, uid) == 0;
+}
 // What the tag held when the unlink asked. Taken then and not later, because
 // clearTagDisplay() runs immediately afterwards and sets tag_present false and
 // g_tag.uid_str empty - by the next loop pass refreshCache() has wiped the
@@ -265,6 +273,8 @@ void showTagWriteAskPopupFmt(int spool_id, uint8_t fmt) {
   s_spool_id  = spool_id;
   s_mode      = ASK_WRITE;
   s_write_fmt = fmt;
+  if (fmt == TAG_FMT_CREALITY)
+    snprintf(s_cfs_asked_uid, sizeof(s_cfs_asked_uid), "%s", g_tag.uid_str);
   logSDf("SHOW: TagWriteAskPopup spool=%d fmt=%s", spool_id, tagFormatLabel(fmt));
   if (fmt == TAG_FMT_CREALITY)
     buildAsk(STR_TW_CFS_ASK_TITLE, STR_TW_CFS_ASK_HINT, STR_TW_BTN_WRITE, STR_TW_BTN_SKIP);
@@ -393,6 +403,7 @@ void handleTagWritePopupDeferredActions() {
     const uint8_t code = tagWriteResultCode();
     tagBusyHide();
     if (code == TW_OK && s_mode != ASK_ERASE) mismatchSettle(g_tag.uid_str, s_spool_id);
+    if (s_write_fmt == TAG_FMT_CREALITY && code == TW_ERR_NO_TAG) s_cfs_asked_uid[0] = '\0';
     showResult(code);
     logSDf("TagWritePopup: finished, mode=%d code=%u", (int)s_mode,
            (unsigned)code);

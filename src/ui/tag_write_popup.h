@@ -25,6 +25,8 @@ void showTagWriteAskPopup(int spool_id);
 // The same question for a given TagFormat instead of the one in Settings.
 // TAG_FMT_CREALITY asks in its own words: a blank tag becomes a CFS tag.
 void showTagWriteAskPopupFmt(int spool_id, uint8_t fmt);
+// Whether the CFS write has been offered for this tag UID already.
+bool tagCfsAskedFor(const char *uid);
 
 // Asks whether to erase the tag as well. Parked rather than built, because the
 // unlink that leads here runs inside an LVGL callback and tears down its own

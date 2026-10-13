@@ -294,20 +294,35 @@ CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4]) {
   return CREALITY_WRITE_OK;
 }
 
-bool crealityProbeBlank(const uint8_t uid[4], const char* uid_str) {
+int crealityProbeFactory(const uint8_t uid[4], const char* uid_str) {
   bool silent = false;
   if (!nfcAuthMifareSector(1, FACTORY_KEY, uid, NFC_KEY_A)) {
     wakeCard(uid, uid_str, &silent);   // for whichever probe comes next
-    return false;
+    return CREALITY_FACTORY_REFUSED;
   }
-  bool blank = true;
-  for (int b = 0; b < 3 && blank; b++) {
-    uint8_t d[16];
-    blank = nfcReadMifareBlock(4 + b, d) && blockIsBlank(d);
+  // Opening with the factory key is not yet "blank": the data blocks have to
+  // be read too. A read that fails says nothing about them (13.10.2026: a
+  // blank sticker, half off the reader after the refused Creality key,
+  // opened and then read nothing, and went to the Bambu probe as "holds
+  // data"). So a failed read gets one more go after a wake.
+  int data = -1;   // -1 unread, 0 holds data, 1 blank
+  for (int attempt = 0; attempt < 2 && data < 0; attempt++) {
+    if (attempt > 0) {
+      if (!wakeCard(uid, uid_str, &silent) ||
+          !nfcAuthMifareSector(1, FACTORY_KEY, uid, NFC_KEY_A)) break;
+    }
+    int blank = 1;
+    for (int b = 0; b < 3 && blank == 1; b++) {
+      uint8_t d[16];
+      if (!nfcReadMifareBlock(4 + b, d)) blank = -1;
+      else if (!blockIsBlank(d)) blank = 0;
+    }
+    data = blank;
   }
   // After an authentication the card does not answer the next poll.
-  int back = wakeCard(uid, uid_str, &silent);
+  int back = silent ? 0 : wakeCard(uid, uid_str, &silent);
   logSDf("NFC: %s opens with the factory key, %s (woke=%d)", uid_str,
-         blank ? "blank" : "but sector 1 holds data", back);
-  return blank;
+         data == 1 ? "blank" : data == 0 ? "but sector 1 holds data"
+                                         : "but sector 1 could not be read", back);
+  return data == 1 ? CREALITY_FACTORY_BLANK : CREALITY_FACTORY_OPENS;
 }

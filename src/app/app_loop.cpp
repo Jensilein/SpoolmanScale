@@ -1920,11 +1920,15 @@ void appLoop() {
           // the card the poll has just selected, so it never sees a refusal.
           // One that has been written since (FilaStation, CFTag) refuses it
           // and goes through the family choice as an unknown tag.
-          bool blank_now = false;
+          int factory = CREALITY_FACTORY_REFUSED;
           if (g_creality_tags && family == TAG_FAMILY_BLANK) {
-            blank_now = crealityProbeBlank(uid, uid_str);
-            if (!blank_now) { tagFamilySet(uid, TAG_FAMILY_UNKNOWN); family = TAG_FAMILY_UNKNOWN; }
+            factory = crealityProbeFactory(uid, uid_str);
+            if (factory != CREALITY_FACTORY_BLANK) {
+              tagFamilySet(uid, TAG_FAMILY_UNKNOWN);
+              family = TAG_FAMILY_UNKNOWN;
+            }
           }
+          bool blank_now = (factory != CREALITY_FACTORY_REFUSED);
           const bool creality_first = g_creality_tags &&
               (family == TAG_FAMILY_UNKNOWN || family == TAG_FAMILY_CREALITY);
           // An unknown tag alternates between placements: Creality first, then
@@ -1953,11 +1957,11 @@ void appLoop() {
             memcpy(g_tag.uid, uid, 4);
             snprintf(g_tag.uid_str, sizeof(g_tag.uid_str), "%s", uid_str);
           } else if (creality_first && family == TAG_FAMILY_UNKNOWN &&
-                     crealityProbeBlank(uid, uid_str)) {
-            // Refused the Creality key, opens with the factory key: a blank
-            // sticker, most likely waiting to be linked and written as a CFS
-            // tag. The Bambu probe would refuse it too and knock it off the
-            // reader (13.10.2026), so it is not run at all.
+                     (factory = crealityProbeFactory(uid, uid_str)) != CREALITY_FACTORY_REFUSED) {
+            // Refused the Creality key, opens with the factory key: a plain
+            // sticker, blank ones most likely waiting to be linked and written
+            // as a CFS tag. The Bambu probe would refuse it too and knock it
+            // off the reader (13.10.2026), so it is not run at all.
             blank_now = true;
           } else {
             // Bambu first on the next placement (once, see above).
@@ -1976,8 +1980,11 @@ void appLoop() {
           // tag, so the Bambu retries are skipped and the branch below for a
           // plain 4 byte card looks the spool up by its UID.
           if (blank_now) {
+            // Opens with the factory key. Kept on the reader like a Creality
+            // tag either way; only an empty one is remembered as blank and
+            // offered the CFS write.
             blank_mifare = true;
-            tagFamilySet(uid, TAG_FAMILY_BLANK);
+            if (factory == CREALITY_FACTORY_BLANK) tagFamilySet(uid, TAG_FAMILY_BLANK);
             // A clean record for this UID: looked up by its UID like any
             // plain 4 byte card, once the retries count as spent.
             memset(&g_tag, 0, sizeof(g_tag));
@@ -2104,6 +2111,21 @@ void appLoop() {
           }
         }
 
+        // A blank tag that belongs to a spool already, and has not been asked
+        // about: offer the CFS write. Covers a write that found no tag (the
+        // card had dropped off the reader, 13.10.2026) once the spool is put
+        // back, and a blank tag linked from Spoolman's web page. Only while
+        // the tag answers right now and nothing else holds the screen.
+        if (blank_mifare && g_creality_tags && sm_found && sm_id > 0 &&
+            strcmp(g_tag.uid_str, uid_str) == 0 &&
+            tagFamilyGet(uid) == TAG_FAMILY_BLANK && !tagCfsAskedFor(uid_str) &&
+            !lookupPending() && !isTagWritePopupOpen() && !isConfirmPopupOpen() &&
+            !isSpoolFlowLinkEntryOpen() && !isSpoolFlowIdInputOpen() &&
+            !isSecondTagPopupOpen() && strcmp(tagWriteState(), "pending") != 0) {
+          logSDf("Tag write: %s is blank and belongs to spool %d, offering Creality CFS",
+                 uid_str, sm_id);
+          showTagWriteAskPopupFmt(sm_id, TAG_FMT_CREALITY);
+        }
       } else if (found && uidLen == 7) {
         // ── NTAG detected ──────────────────────────────────────
         last_tag_seen_ms = millis();
