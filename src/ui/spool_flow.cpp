@@ -3562,9 +3562,23 @@ void showLinkEntryPopup(bool is_bambu) {
   lv_obj_set_width(lbl_ctx, 450);
   lv_obj_align(lbl_ctx, LV_ALIGN_TOP_MID, 0, 62);
 
-  // Button-Layout: 3 Buttons zentriert, je 380x60
-  const int BTN_W = 380, BTN_H = 60, BTN_GAP = 10;
-  const int Y1 = 100, Y2 = Y1 + BTN_H + BTN_GAP, Y3 = Y2 + BTN_H + BTN_GAP;
+  // Creating the spool from the tag belongs here as well, not only behind
+  // "Copy spool": an unknown spool is the very case a link is opened for, and
+  // with an empty inventory (13.10.2026, fresh Spoolman) there is nothing to
+  // link to at all. Same condition as the copy dialog.
+  const bool offer_from_tag = backendCanCreateFromTag() &&
+                              (strlen(g_tag.tray_uuid) == 32 ||
+                               strcmp(g_tag.decoder, "Creality") == 0) &&
+                              g_tag.material[0] != '\0';
+
+  // Button-Layout: 3 Buttons zentriert, je 380x60 - or four, a little
+  // smaller, when the tag can create the spool.
+  const int BTN_W = 380;
+  const int BTN_H   = offer_from_tag ? 48 : 60;
+  const int BTN_GAP = offer_from_tag ?  8 : 10;
+  const int Y1 = offer_from_tag ? 92 : 100, Y2 = Y1 + BTN_H + BTN_GAP;
+  const int YT = Y2 + BTN_H + BTN_GAP;
+  const int Y3 = offer_from_tag ? YT + BTN_H + BTN_GAP : Y2 + BTN_H + BTN_GAP;
 
   // Button 1: Spool-ID eingeben
   lv_obj_t *btn1 = lv_btn_create(scr_link_entry);
@@ -3606,6 +3620,31 @@ void showLinkEntryPopup(bool is_bambu) {
   lv_obj_set_style_text_color(l2, lv_color_hex(UI_COL_INK_2), 0);
   lv_obj_set_style_text_font(l2, &lv_font_montserrat_ext_18, 0);
   lv_obj_center(l2);
+
+  // Create from the tag, green like its twin in the copy dialog.
+  if (offer_from_tag) {
+    lv_obj_t *btnt = lv_btn_create(scr_link_entry);
+    lv_obj_set_size(btnt, BTN_W, BTN_H);
+    lv_obj_align(btnt, LV_ALIGN_TOP_MID, 0, YT);
+    lv_obj_set_style_bg_color(btnt, lv_color_hex(UI_COL_GO_BG), 0);
+    lv_obj_set_style_bg_color(btnt, lv_color_hex(UI_COL_GO_BG_PRESSED), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(btnt, 10, 0);
+    lv_obj_set_style_shadow_width(btnt, 0, 0);
+    lv_obj_set_style_border_width(btnt, 1, 0);
+    lv_obj_set_style_border_color(btnt, lv_color_hex(UI_COL_ACCENT), 0);
+    lv_obj_add_event_cb(btnt, [](lv_event_t *e) {
+      logSD("BTN: LinkEntry -> New from tag");
+      link_popup_dismissed = true;
+      closeLinkEntryPopup();
+      newtag_open_pending = true;
+    }, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lt = lv_label_create(btnt);
+    char bt[40]; copyT(bt, sizeof(bt), STR_NEWTAG_BTN);
+    lv_label_set_text(lt, bt);
+    lv_obj_set_style_text_color(lt, lv_color_hex(UI_COL_OK_TEXT), 0);
+    lv_obj_set_style_text_font(lt, &lv_font_montserrat_ext_18, 0);
+    lv_obj_center(lt);
+  }
 
   // Button 3: Abbrechen
   lv_obj_t *btn3 = lv_btn_create(scr_link_entry);
