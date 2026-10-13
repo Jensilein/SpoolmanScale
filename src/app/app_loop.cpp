@@ -184,6 +184,18 @@ static bool tag_kept_by_weight = false;
 // answering while the weight falls well below this was lifted, not lost.
 static float weight_at_last_read = 0.0f;
 
+// Something spool-sized lies on the pad, and it has not fallen to under half
+// of what the pad carried when the tag was last read. Independent of the
+// settled reference, which a spool put down a second ago does not have yet:
+// on 13.10.2026 a Bambu tag read once and went silent 1.5 s after the spool
+// was put down, before the weight had settled, so the spool was dropped and
+// never weighed although it lay there.
+static bool padCarriesSpool() {
+  if (!g_scale_fitted || !scale_ready) return false;
+  const float floor_g = fmaxf(LOC_WEIGHT_MIN_G, weight_at_last_read * LOC_WEIGHT_GONE_FRACTION);
+  return scale_weight_g >= floor_g;
+}
+
 // Did the spool actually leave, or did the reader merely lose the tag?
 //
 // Two callers ask exactly this: the location and AMS popups below, and the
@@ -2280,13 +2292,13 @@ void appLoop() {
         // what it carried when the tag was last read.
         bool held = false;
         if (tag_present && tag_kept_by_weight) {
-          if (weightSaysSpoolStayed()) {
+          if (padCarriesSpool()) {
             held = true;
             last_tag_seen_ms = millis();
           } else {
             tag_kept_by_weight = false;
-            logSDf("NFC: the weight moved (%.0fg, was %.0fg) - checking the tag again",
-                   scale_weight_g, loc_weight_ref);
+            logSDf("NFC: the pad lost the spool (%.0fg, %.0fg at the last read) - checking the tag again",
+                   scale_weight_g, weight_at_last_read);
           }
         }
         // Only for the first seconds after the tag last answered: a Creality
@@ -2350,13 +2362,13 @@ void appLoop() {
           const bool weight_gone = weightSaysSpoolGone() &&
                                    nfc_fast_polls >= NFC_GONE_MIN_MISSES;
           if (!weight_gone && !retrying && millis() - first_miss_ms >= absent_limit &&
-              weightSaysSpoolStayed()) {
+              padCarriesSpool()) {
             // Silent tag, unchanged weight: the spool is still lying there.
             tag_kept_by_weight = true;
             nfc_fast_polls = 0;
             last_tag_seen_ms = millis();
-            logSDf("NFC: tag silent, but the pad still carries %.0fg of %.0fg - spool stays present",
-                   scale_weight_g, loc_weight_ref);
+            logSDf("NFC: tag silent, but the pad still carries %.0fg (%.0fg at the last read) - spool stays present",
+                   scale_weight_g, weight_at_last_read);
           } else if (weight_gone || (!retrying && millis() - first_miss_ms >= absent_limit)) {
             nfc_stat_removals++;
             bambuScanReport();   // a Bambu tag that left before its reads settled
