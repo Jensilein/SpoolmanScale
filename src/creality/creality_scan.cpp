@@ -115,6 +115,14 @@ CrealityScanResult scanCrealityTag(uint8_t *uid, uint8_t uid_len, bool fresh) {
     snprintf(g_tag.color_hex, sizeof(g_tag.color_hex), "#%02X%02X%02X", t.r, t.g, t.b);
     g_tag.color = spoolColorFromRgba(t.r, t.g, t.b, 0xFF);
   }
+  // What v0.8.2 uses to create a spool from a tag. Creality's record has
+  // no diameter, and CFS only takes 1.75 mm.
+  if (t.material[0]) {
+    snprintf(g_tag.filament_type, sizeof(g_tag.filament_type), "%s", t.material);
+  }
+  g_tag.length_m = t.length_m;
+  g_tag.diameter_mm = 1.75f;
+  g_tag.color_count = t.has_color ? 1 : 0;
   g_tag.temp_min = t.temp_min;
   g_tag.temp_max = t.temp_max;
   g_tag.spool_weight = t.weight_g;
