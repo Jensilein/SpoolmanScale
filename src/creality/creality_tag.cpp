@@ -1,6 +1,7 @@
 #include "creality_tag.h"
 
 #include <ctype.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -222,4 +223,152 @@ bool crealityDecode(const uint8_t sector1[3][16], CrealityTag* out) {
   memcpy(rec, plain, 40);
   rec[40] = '\0';
   return crealityParseRecord(rec, out);
+}
+
+// ------------------------------------------------------------
+//  Writing
+// ------------------------------------------------------------
+
+bool crealityEncrypt48(const uint8_t in[48], uint8_t out[48]) {
+  return aesEcb(DATA_KEY, MBEDTLS_AES_ENCRYPT, in, out, 48);
+}
+
+bool crealityEncryptRecord(const char rec40[40], uint8_t out[48]) {
+  uint8_t plain[48];
+  memset(plain, ' ', sizeof(plain));
+  memcpy(plain, rec40, 40);
+  return crealityEncrypt48(plain, out);
+}
+
+// Upper case letters, digits and '+', nothing else: "Hyper PLA-CF" -> "HYPERPLACF".
+static void normName(const char* in, char* out, size_t out_len) {
+  size_t o = 0;
+  for (const char* p = in; p && *p && o + 1 < out_len; p++) {
+    const unsigned char c = (unsigned char)*p;
+    if (isalnum(c) || c == '+') out[o++] = (char)toupper(c);
+  }
+  out[o] = '\0';
+}
+
+struct ProductId { const char* key; const char* id; };
+static const ProductId CREALITY_PRODUCTS[] = {
+  {"HYPERPLA","01001"}, {"HYPERLWPLA","01002"}, {"HYPERSTARDUST","01004"},
+  {"SOLEYINULTRAPLA","01601"}, {"HYPERPLACF","02001"}, {"HYPERABS","03001"},
+  {"CRPLA","04001"}, {"CRSILK","05001"}, {"CRPETG","06001"},
+  {"HYPERPETG","06002"}, {"HYPERPETGCF","06003"}, {"CRABS","07001"},
+  {"HYPERPC","07002"}, {"ENDERPLA","08001"}, {"ENPLA+","09001"},
+  {"ENPLAPLUS","09001"}, {"ENDERFASTPLA","09002"}, {"HPTPU","10001"},
+  {"CRNYLON","11001"}, {"HYPERPPACF","12002"}, {"HYPERPAHTCF","12003"},
+  {"HYPERPA612CF","12004"}, {"HYPERPA6CF","12005"}, {"CRPLACARBON","13001"},
+  {"CRPLAMATTE","14001"}, {"CRPLAFLUO","15001"}, {"CRTPU","16001"},
+  {"CRWOOD","17001"}, {"HPULTRAPLA","18001"}, {"HPASA","19001"},
+  {"HYPERASA","19001"}, {"HYPERMARBLE","29001"}, {nullptr, nullptr} };
+static const ProductId ESUN_PRODUCTS[] = {
+  {"PLA+","E1001"}, {"PLAPLUS","E1001"}, {"PLALW","00035"}, {nullptr, nullptr} };
+static const ProductId POLYMAKER_PRODUCTS[] = {
+  {"PANCHROMAPLASATIN","P1001"}, {"POLYSONICPLAPRO","P1002"},
+  {"PANCHROMAPLAMATTE","P1003"}, {nullptr, nullptr} };
+struct Brand { const char* key; const ProductId* table; };
+static const Brand BRANDS[] = {
+  {"CREALITY", CREALITY_PRODUCTS}, {"ESUN", ESUN_PRODUCTS},
+  {"POLYMAKER", POLYMAKER_PRODUCTS}, {nullptr, nullptr} };
+
+// Longest key contained in the normalised text.
+static const char* findProduct(const ProductId* table, const char* text) {
+  char n[96]; normName(text, n, sizeof(n));
+  const char* best = nullptr; size_t best_len = 0;
+  for (const ProductId* p = table; p->key; p++) {
+    const size_t l = strlen(p->key);
+    if (l > best_len && strstr(n, p->key)) { best = p->id; best_len = l; }
+  }
+  return best;
+}
+
+static const ProductId GENERIC_IDS[] = {
+  {"PLA","00001"}, {"PLA_SILK","00002"}, {"PLA_MATTE","00001"},
+  {"PETG","00003"}, {"ABS","00004"}, {"TPU","00005"}, {"PLA_CF","00006"},
+  {"ASA","00007"}, {"PA","00008"}, {"NYLON","00008"}, {"PA_CF","00009"},
+  {"BVOH","00010"}, {"PVA","00011"}, {"HIPS","00012"}, {"PET_CF","00013"},
+  {"PETG_CF","00014"}, {"PA6_CF","00015"}, {"PAHT_CF","00016"}, {"PPS","00017"},
+  {"PPS_CF","00018"}, {"PP","00019"}, {"PET","00020"}, {"PC","00021"},
+  {"PA612_CF","00022"}, {"PA12_CF","00025"}, {"PETG_GF","00027"},
+  {"PP_CF","00031"}, {"PCTG","00032"}, {"ASA_CF","00033"}, {"PA_GF","00034"},
+  {"PA6_GF","00034"}, {"SILK_PLA","00002"}, {"MATTE_PLA","00001"}, {nullptr, nullptr} };
+
+// The material type as a whole word, longest first: "Overture Matte PLA" ->
+// PLA, "xyz PETG-CF" -> PETG-CF, "Geeetech HS-PLA" -> PLA.
+static const char* findGeneric(const char* text) {
+  if (!text || !*text) return nullptr;
+  char w[100]; size_t o = 0; bool sep = true;
+  w[o++] = '_';
+  for (const char* p = text; *p && o + 2 < sizeof(w); p++) {
+    const unsigned char c = (unsigned char)*p;
+    if (isalnum(c)) { w[o++] = (char)toupper(c); sep = false; }
+    else if (!sep)  { w[o++] = '_'; sep = true; }
+  }
+  if (!sep) w[o++] = '_';
+  w[o] = '\0';
+  const char* best = nullptr; size_t best_len = 0;
+  for (const ProductId* p = GENERIC_IDS; p->key; p++) {
+    char k[24]; snprintf(k, sizeof(k), "_%s_", p->key);
+    const size_t l = strlen(p->key);
+    if (l > best_len && strstr(w, k)) { best = p->id; best_len = l; }
+  }
+  return best;
+}
+
+void crealityFilamentIdFor(const char* vendor, const char* name, const char* material,
+                           char out[7]) {
+  char v[48]; normName(vendor ? vendor : "", v, sizeof(v));
+  const char* id = nullptr;
+  for (const Brand* b = BRANDS; b->key && !id; b++) {
+    if (v[0] && strstr(v, b->key)) {
+      id = findProduct(b->table, name ? name : "");
+      if (!id) id = findProduct(b->table, material ? material : "");
+      break;
+    }
+  }
+  if (!id) id = findProduct(CREALITY_PRODUCTS, material ? material : "");
+  if (!id) id = findGeneric(material);
+  if (!id) id = findGeneric(name);
+  if (!id) id = "00001";
+  snprintf(out, 7, "1%s", id);
+}
+
+void crealityLengthCodeFor(float net_g, char out[5]) {
+  struct B { int g; const char* code; };
+  static const B buckets[] = { {250,"0082"}, {500,"0165"}, {600,"0198"},
+                               {750,"0247"}, {1000,"0330"} };
+  if (net_g <= 0) net_g = 1000;
+  const char* best = "0330"; float best_d = 1e9f;
+  for (const B& b : buckets) {
+    const float d = fabsf(net_g - (float)b.g);
+    if (d < best_d) { best_d = d; best = b.code; }
+  }
+  snprintf(out, 5, "%s", best);
+}
+
+bool crealityBuildRecord(const CrealityRecordIn& in, char out[41]) {
+  char date[6];
+  if (in.month >= 1 && in.month <= 12 && in.day >= 1 && in.day <= 31) {
+    // Month as one hex digit, day as BCD, year as two hex digits - the way
+    // FilaStation writes it.
+    snprintf(date, sizeof(date), "%1X%02X%02X", in.month,
+             ((in.day / 10) << 4) | (in.day % 10), (unsigned)(in.year % 100));
+  } else {
+    snprintf(date, sizeof(date), "AB124");
+  }
+  char fid[7]; crealityFilamentIdFor(in.vendor, in.name, in.material, fid);
+  char color[7] = "808080";
+  const char* c = in.color_hex ? in.color_hex : "";
+  if (*c == '#') c++;
+  if (strlen(c) >= 6) {
+    bool hex = true;
+    for (int i = 0; i < 6; i++) if (!isxdigit((unsigned char)c[i])) hex = false;
+    if (hex) for (int i = 0; i < 6; i++) color[i] = (char)toupper((unsigned char)c[i]);
+  }
+  char len[5]; crealityLengthCodeFor(in.net_g, len);
+  const int serial = in.spool_id > 0 ? in.spool_id % 1000000 : 1;
+  const int n = snprintf(out, 41, "%s0276A2%s0%s%s%06d000000", date, fid, color, len, serial);
+  return n == 40;
 }

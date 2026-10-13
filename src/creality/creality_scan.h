@@ -19,3 +19,21 @@ CrealityScanResult scanCrealityTag(uint8_t *uid, uint8_t uid_len, bool fresh);
 // "woke" in the log: 0 = no answer, 1 = plain wake, 2 = after release,
 // 3/4 = after field cycles.
 int crealityRecoverCard(const uint8_t uid[4], const char* uid_str);
+
+enum CrealityWriteResult {
+  CREALITY_WRITE_OK,
+  CREALITY_WRITE_NO_TAG,        // nothing (or no 4 byte MIFARE tag) on the reader
+  CREALITY_WRITE_IS_CREALITY,   // already opens with the Creality key: left alone
+  CREALITY_WRITE_NOT_BLANK,     // other keys, or data in sector 1: left alone
+  CREALITY_WRITE_FAILED,        // a block write was refused part way through
+  CREALITY_WRITE_VERIFY_FAILED, // written, but did not read back as written
+};
+
+// Puts a 40 character Creality record (crealityBuildRecord) on the blank
+// MIFARE Classic tag on the reader. Blank means: sector 1 opens with the
+// factory key FFFFFFFFFFFF and its three data blocks hold nothing. Anything
+// else, an original Creality tag above all, is refused before a byte changes.
+// Sector 1 gets the encrypted record and the UID's derived key as key A and
+// key B; sector 2 gets spaces, as Creality's own tags carry. The write is
+// read back with the new key before it counts. uid_out receives the UID.
+CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4]);

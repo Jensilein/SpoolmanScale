@@ -36,5 +36,12 @@ bool nfcInRelease();
 bool nfcReadMifareSector(int sector, uint8_t key[6], uint8_t uid[4], uint8_t blocks[4][16],
                          uint8_t key_type = NFC_KEY_B);
 bool nfcReadMifareBlock(uint8_t block, uint8_t data[16]);
+// One authentication of a sector trailer, no retry and no reselect: the
+// Creality writer probes which key a blank tag opens with, and a second try
+// on a refused key only halts the card a second time.
+bool nfcAuthMifareSector(int sector, const uint8_t key[6], const uint8_t uid[4],
+                         uint8_t key_type);
+// Writes one 16 byte block of the sector authenticated last.
+bool nfcWriteMifareBlock(uint8_t block, const uint8_t data[16]);
 bool nfcReadNtagPage(uint8_t page, uint8_t* data);
 bool nfcWriteNtagPage(uint8_t page, uint8_t* data);

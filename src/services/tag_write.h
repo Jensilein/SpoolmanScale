@@ -11,6 +11,11 @@ enum TagFormat : uint8_t {
   // differs from OpenSpool in one string and nothing else. It exists so a tag
   // can be labelled the way a FilaMan installation expects to find it.
   TAG_FMT_FILAMAN = 3,
+  // Creality CFS: the encrypted record on a blank 4 byte MIFARE Classic tag,
+  // keyed to its UID. Never a setting: offered after a blank MIFARE tag was
+  // linked while Creality tags are on, and only ever written to a tag that is
+  // still on the factory key.
+  TAG_FMT_CREALITY = 4,
 };
 
 // True for the formats that go on the tag as an NDEF JSON record.
@@ -45,6 +50,7 @@ enum TagWriteResult : uint8_t {
   TW_ERR_BACKEND,     // the spool could not be fetched
   TW_ERR_SPACE,       // too small, or no NDEF capability container
   TW_ERR_WRITE,       // a page write failed part way through
+  TW_ERR_NOT_BLANK,   // MIFARE: not on the factory key or not empty, left alone
 };
 
 // How far a write or an erase has come, in pages, for a bar on the device.

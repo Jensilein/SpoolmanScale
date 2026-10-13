@@ -3195,6 +3195,13 @@ const char* const STRINGS[][3] = {
   { "Noch nicht übernommen", "Not applied yet",
     "Pas encore appliqué" },  // STR_W_THEME_UNSAVED
   { "Ins AMS",                         "Into AMS",                            "Dans l'AMS" },  // STR_AMS_MAIN_ASSIGN
+  { "Kein leerer Tag. Er wurde nicht verändert.",
+    "Not a blank tag. It was left as it is.",
+    "Ce n'est pas un tag vierge. Il n'a pas été modifié." },  // STR_TW_ERR_NOT_BLANK
+  { "Als CFS-Tag beschreiben?", "Write as a CFS tag?", "Écrire comme tag CFS ?" },  // STR_TW_CFS_ASK_TITLE
+  { "Der leere Tag bekommt die Daten dieser Spule, damit das Creality CFS sie erkennt.",
+    "The blank tag gets this spool's data, so the Creality CFS recognises it.",
+    "Le tag vierge reçoit les données de cette bobine, pour que le CFS Creality la reconnaisse." },  // STR_TW_CFS_ASK_HINT
 };
 
 StringID tagWriteResultString(uint8_t code) {
@@ -3204,6 +3211,7 @@ StringID tagWriteResultString(uint8_t code) {
     case TW_ERR_NOT_NTAG:  return STR_TW_ERR_NOT_NTAG;
     case TW_ERR_BACKEND:   return STR_TW_ERR_BACKEND;
     case TW_ERR_SPACE:     return STR_TW_ERR_SPACE;
+    case TW_ERR_NOT_BLANK: return STR_TW_ERR_NOT_BLANK;
     default:               return STR_TW_ERR_WRITE;
   }
 }

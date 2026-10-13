@@ -5,6 +5,7 @@
 #include "hardware/sd_logger.h"
 #include "bambu/bambu_tag.h"
 #include "services/spool_color.h"
+#include "services/tag_family.h"
 #include <Arduino.h>
 #include <cstring>
 #include <stdio.h>
@@ -154,4 +155,132 @@ CrealityScanResult scanCrealityTag(uint8_t *uid, uint8_t uid_len, bool fresh) {
 int crealityRecoverCard(const uint8_t uid[4], const char* uid_str) {
   bool silent = false;
   return wakeCard(uid, uid_str, &silent);
+}
+
+// ============================================================
+//  WRITING A BLANK TAG
+// ============================================================
+
+static const uint8_t FACTORY_KEY[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+// A data block nobody has written: all zeros, all FF, or all spaces.
+static bool blockIsBlank(const uint8_t b[16]) {
+  const uint8_t first = b[0];
+  if (first != 0x00 && first != 0xFF && first != 0x20) return false;
+  for (int i = 1; i < 16; i++) if (b[i] != first) return false;
+  return true;
+}
+
+CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4]) {
+  uint8_t uid[NFC_UID_MAX] = {0};
+  uint8_t uid_len = 0;
+  if (!nfcReadPassiveTarget(uid, &uid_len, 600) || uid_len != 4) {
+    return CREALITY_WRITE_NO_TAG;
+  }
+  memcpy(uid_out, uid, 4);
+  char uid_str[24];
+  snprintf(uid_str, sizeof(uid_str), "%02X:%02X:%02X:%02X", uid[0], uid[1], uid[2], uid[3]);
+
+  uint8_t key[6];
+  uint8_t cipher[48];
+  if (!crealityDeriveSectorKey(uid, key) || !crealityEncryptRecord(rec40, cipher)) {
+    logSDf("CFS write: %s AES failed", uid_str);
+    return CREALITY_WRITE_FAILED;
+  }
+
+  bool silent = false;
+
+  // 1. Is sector 1 still on the factory key? A refused key halts the card,
+  //    so every "no" is followed by a wake before the next question.
+  if (!nfcAuthMifareSector(1, FACTORY_KEY, uid, NFC_KEY_A)) {
+    int woke = wakeCard(uid, uid_str, &silent);
+    uint8_t blocks[4][16];
+    if (woke && !silent && nfcReadMifareSector(1, key, uid, blocks, NFC_KEY_A)) {
+      CrealityTag t;
+      const bool rec = crealityDecode(blocks, &t);
+      logSDf("CFS write: %s already opens with the Creality key%s - not written",
+             uid_str, rec ? " and holds a record" : "");
+      wakeCard(uid, uid_str, &silent);
+      if (rec) tagFamilySet(uid, TAG_FAMILY_CREALITY);
+      return CREALITY_WRITE_IS_CREALITY;
+    }
+    logSDf("CFS write: %s refuses the factory key - not a blank tag, not written", uid_str);
+    if (!silent) wakeCard(uid, uid_str, &silent);
+    return CREALITY_WRITE_NOT_BLANK;
+  }
+
+  uint8_t old[3][16];
+  for (int b = 0; b < 3; b++) {
+    if (!nfcReadMifareBlock(4 + b, old[b])) {
+      logSDf("CFS write: %s block %d unreadable - not written", uid_str, 4 + b);
+      wakeCard(uid, uid_str, &silent);
+      return CREALITY_WRITE_FAILED;
+    }
+    if (!blockIsBlank(old[b])) {
+      logSDf("CFS write: %s block %d holds data - not written", uid_str, 4 + b);
+      wakeCard(uid, uid_str, &silent);
+      return CREALITY_WRITE_NOT_BLANK;
+    }
+  }
+
+  // 2. Sector 1: the record, then the trailer that locks it to the new key.
+  //    The trailer goes last, so a failure before it leaves a tag that is
+  //    still on the factory key and can simply be written again.
+  for (int b = 0; b < 3; b++) {
+    if (!nfcWriteMifareBlock(4 + b, cipher + b * 16)) {
+      logSDf("CFS write: %s block %d refused", uid_str, 4 + b);
+      wakeCard(uid, uid_str, &silent);
+      return CREALITY_WRITE_FAILED;
+    }
+  }
+  uint8_t trailer[16];
+  memcpy(trailer, key, 6);
+  trailer[6] = 0xFF; trailer[7] = 0x07; trailer[8] = 0x80; trailer[9] = 0x69;
+  memcpy(trailer + 10, key, 6);
+  if (!nfcWriteMifareBlock(7, trailer)) {
+    logSDf("CFS write: %s trailer refused", uid_str);
+    wakeCard(uid, uid_str, &silent);
+    return CREALITY_WRITE_FAILED;
+  }
+
+  // 3. Sector 2 holds spaces on Creality's own tags. Only on a blank one, and
+  //    nothing depends on it: the printer reads sector 1.
+  if (nfcAuthMifareSector(2, FACTORY_KEY, uid, NFC_KEY_A)) {
+    uint8_t spaces[16];
+    memset(spaces, ' ', 16);
+    bool blank2 = true;
+    for (int b = 0; b < 3 && blank2; b++) {
+      uint8_t d[16];
+      blank2 = nfcReadMifareBlock(8 + b, d) && blockIsBlank(d);
+    }
+    if (blank2) {
+      for (int b = 0; b < 3; b++) {
+        if (!nfcWriteMifareBlock(8 + b, spaces)) {
+          logSDf("CFS write: %s sector 2 block %d refused (not needed)", uid_str, 8 + b);
+          break;
+        }
+      }
+    }
+  } else {
+    logSDf("CFS write: %s sector 2 not on the factory key, left as it is", uid_str);
+  }
+
+  // 4. Read it back the way the scale and the printer will.
+  int woke = wakeCard(uid, uid_str, &silent);
+  uint8_t back[4][16];
+  bool verified = false;
+  if (woke && !silent && nfcReadMifareSector(1, key, uid, back, NFC_KEY_A)) {
+    verified = memcmp(back[0], cipher, 16) == 0 &&
+               memcmp(back[1], cipher + 16, 16) == 0 &&
+               memcmp(back[2], cipher + 32, 16) == 0;
+  }
+  if (!silent) wakeCard(uid, uid_str, &silent);
+  if (!verified) {
+    logSDf("CFS write: %s did not read back as written", uid_str);
+    return CREALITY_WRITE_VERIFY_FAILED;
+  }
+
+  tagFamilySet(uid, TAG_FAMILY_CREALITY);
+  logSDf("CFS write: %s written and verified (%.40s)", uid_str, rec40);
+  return CREALITY_WRITE_OK;
 }

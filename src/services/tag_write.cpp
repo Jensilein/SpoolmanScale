@@ -6,6 +6,7 @@
 #include <math.h>
 #include <stdarg.h>
 #include <string.h>
+#include <time.h>
 
 #include "hardware/nfc.h"
 #include "hardware/sd_logger.h"
@@ -14,6 +15,8 @@
 #include "bambu/bambu_scan.h"
 #include "bambu/bambu_tag.h"
 #include "bambu/material_match.h"
+#include "creality/creality_scan.h"
+#include "creality/creality_tag.h"
 #include "services/backend.h"
 #include "services/backend_api.h"
 #include "services/filaman_api.h"
@@ -597,6 +600,7 @@ static const char* fmtLabel(TagFormat fmt) {
   switch (fmt) {
     case TAG_FMT_ACE:     return "ACE";
     case TAG_FMT_FILAMAN: return "FilaMan";
+    case TAG_FMT_CREALITY: return "Creality CFS";
     default:              return "OpenSpool";
   }
 }
@@ -610,6 +614,7 @@ const char* tagFormatLabel(uint8_t fmt) {
     case TAG_FMT_ACE:       return "Anycubic ACE";
     case TAG_FMT_FILAMAN:   return "FilaMan";
     case TAG_FMT_ERASE:     return "erase";
+    case TAG_FMT_CREALITY:  return "Creality CFS";
     default:                return "OpenSpool";
   }
 }
@@ -1338,16 +1343,88 @@ static bool writeSpoolRecord(int spool_id, TagFormat fmt,
   return true;
 }
 
+// A Creality CFS record onto the blank MIFARE tag on the reader. Its own path:
+// selectWritableTag() turns every 4 byte UID away, and none of the NTAG page
+// code applies. Reports through finish() either way.
+static bool writeCrealityJob(int spool_id, char *name, size_t name_len) {
+  name[0] = 0;
+  JsonDocument doc;
+  int code = backendGetSpoolJson(backendBaseUrl(), spool_id, doc);
+  if (code != 200 || doc.isNull()) {
+    char m[96];
+    snprintf(m, sizeof(m), "Spool %d not found on %s (HTTP %d)",
+             spool_id, backendName(), code);
+    finish("error", m, TW_ERR_BACKEND);
+    return false;
+  }
+  JsonObjectConst sp = doc.as<JsonObjectConst>();
+
+  CrealityRecordIn in;
+  memset(&in, 0, sizeof(in));
+  in.vendor    = sp["filament"]["vendor"]["name"] | "";
+  in.name      = sp["filament"]["name"] | "";
+  in.material  = sp["filament"]["material"] | "PLA";
+  in.color_hex = sp["filament"]["color_hex"] | "";
+  // What was on the spool when it was new: the spool's own figure first,
+  // then the filament's nominal one. The record carries a length class, not
+  // a weight, so 1 kg and 1.02 kg land on the same code.
+  float net = sp["initial_weight"] | 0.0f;
+  if (net <= 0) net = sp["filament"]["weight"] | 0.0f;
+  in.net_g    = net;
+  in.spool_id = spool_id;
+  struct tm now;
+  if (getLocalTime(&now, 0) && now.tm_year + 1900 >= 2024) {
+    in.month = now.tm_mon + 1;
+    in.day   = now.tm_mday;
+    in.year  = now.tm_year + 1900;
+  }
+
+  char rec[41];
+  if (!crealityBuildRecord(in, rec)) {
+    finish("error", "Could not build a Creality record for this spool", TW_ERR_WRITE);
+    return false;
+  }
+
+  uint8_t uid[4];
+  const CrealityWriteResult r = crealityWriteTag(rec, uid);
+  cache_dirty = true;
+  switch (r) {
+    case CREALITY_WRITE_OK:
+      break;
+    case CREALITY_WRITE_NO_TAG:
+      finish("error", "No MIFARE tag on the reader", TW_ERR_NO_TAG);
+      return false;
+    case CREALITY_WRITE_IS_CREALITY:
+      finish("error", "Already a Creality tag, left as it is", TW_ERR_NOT_BLANK);
+      return false;
+    case CREALITY_WRITE_NOT_BLANK:
+      finish("error", "Not a blank tag, left as it is", TW_ERR_NOT_BLANK);
+      return false;
+    case CREALITY_WRITE_VERIFY_FAILED:
+      finish("error", "Written, but it did not read back - try again", TW_ERR_WRITE);
+      return false;
+    default:
+      finish("error", "Write failed - keep the tag still on the reader", TW_ERR_WRITE);
+      return false;
+  }
+  const char *n = in.name;
+  snprintf(name, name_len, "%s", n[0] ? n : "spool");
+  return true;
+}
+
 // The whole write for a caller that has no parking slot to go through - the
 // device screen and the FilaMan trigger both land here when no record came
 // with the request.
 bool tagWriteSpoolNow(int spool_id, TagFormat fmt) {
   if (spool_id <= 0) return false;
-  uint8_t uid[NFC_UID_MAX], uid_len = 0;
-  if (!selectWritableTag(uid, &uid_len)) return false;
-
   char name[48];
-  if (!writeSpoolRecord(spool_id, fmt, name, sizeof(name))) return false;
+  if (fmt == TAG_FMT_CREALITY) {
+    if (!writeCrealityJob(spool_id, name, sizeof(name))) return false;
+  } else {
+    uint8_t uid[NFC_UID_MAX], uid_len = 0;
+    if (!selectWritableTag(uid, &uid_len)) return false;
+    if (!writeSpoolRecord(spool_id, fmt, name, sizeof(name))) return false;
+  }
 
   char m[128];
   snprintf(m, sizeof(m), "Wrote spool %d (%s) as %s", spool_id, name,
@@ -1365,6 +1442,18 @@ void tagWriteTick() {
   scanTick();
   if (!pending) return;
   pending = false;
+
+  if (pending_fmt == TAG_FMT_CREALITY) {
+    // Follows a link that already happened, so there is nothing to link here.
+    char cname[48];
+    if (writeCrealityJob(pending_id, cname, sizeof(cname))) {
+      snprintf(report.name, sizeof(report.name), "%s", cname);
+      char m[128];
+      snprintf(m, sizeof(m), "Wrote spool %d (%s) as Creality CFS", pending_id, cname);
+      finish("ok", m, TW_OK);
+    }
+    return;
+  }
 
   uint8_t uid[NFC_UID_MAX], uid_len = 0;
   if (!selectWritableTag(uid, &uid_len)) return;

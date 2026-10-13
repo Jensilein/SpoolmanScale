@@ -55,3 +55,39 @@ bool crealityDecode(const uint8_t sector1[3][16], CrealityTag* out);
 // Exposed for the host test and for the log line.
 bool crealityDecrypt48(const uint8_t in[48], uint8_t out[48]);
 bool crealityParseRecord(const char* rec40, CrealityTag* out);
+
+// ============================================================
+//  WRITING (the other direction, for blank tags)
+//
+//  The same record FilaStation's waage.py v3.7+ writes, so a tag written by
+//  either reads the same in the CFS:
+//    date(5) "0276" "A2" filament(6) "0"RRGGBB length(4) serial(6) "000000"
+//  The serial is the backend spool id, which is what CFSync links by.
+// ============================================================
+
+struct CrealityRecordIn {
+  const char* vendor;    // "Sunlu", "Creality" - picks branded products
+  const char* name;      // filament name, "Hyper PLA", "Matte PLA"
+  const char* material;  // "PLA", "PETG-CF"
+  const char* color_hex; // "FF6A14" or "#FF6A14"; empty = 808080
+  float       net_g;     // filament on a full spool; 0 = 1 kg
+  int         spool_id;  // goes into the serial, 6 decimal digits
+  int         month, day, year;  // production date; 0 = fixed fallback
+};
+
+// "1" + the five character id of Creality's database. Branded products by
+// vendor + name first (Creality "Hyper PLA" -> 101001), then the material
+// type as a word inside material or name ("Overture Matte PLA" -> PLA),
+// longest match winning, then Generic PLA.
+void crealityFilamentIdFor(const char* vendor, const char* name, const char* material,
+                           char out[7]);
+
+// Filament length in metres as Creality writes it, for the nearest of
+// 250/500/600/750/1000 g: "0082" ... "0330".
+void crealityLengthCodeFor(float net_g, char out[5]);
+
+// The 40 character record. False only when an argument is unusable.
+bool crealityBuildRecord(const CrealityRecordIn& in, char out[41]);
+
+// The 48 bytes for blocks 4..6: the record padded with spaces, encrypted.
+bool crealityEncryptRecord(const char rec40[40], uint8_t out[48]);

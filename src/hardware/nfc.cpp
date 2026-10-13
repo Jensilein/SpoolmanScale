@@ -154,6 +154,23 @@ bool nfcReadMifareBlock(uint8_t block, uint8_t data[16]) {
   return nfc && nfc->mifareclassic_ReadDataBlock(block, data);
 }
 
+bool nfcAuthMifareSector(int sector, const uint8_t key[6], const uint8_t uid[4],
+                         uint8_t key_type) {
+  if (!nfc) return false;
+  uint8_t k[6], u[4];
+  memcpy(k, key, 6);
+  memcpy(u, uid, 4);
+  return nfc->mifareclassic_AuthenticateBlock(u, 4, sector * 4 + 3,
+                                              key_type == NFC_KEY_A ? 0 : 1, k);
+}
+
+bool nfcWriteMifareBlock(uint8_t block, const uint8_t data[16]) {
+  if (!nfc) return false;
+  uint8_t d[16];
+  memcpy(d, data, 16);
+  return nfc->mifareclassic_WriteDataBlock(block, d);
+}
+
 bool nfcReadNtagPage(uint8_t page, uint8_t* data) {
   if (!nfc) return false;
   for (int retry = 0; retry < 3; retry++) {

@@ -21,6 +21,9 @@
 // Asks whether to write the spool onto the tag. No HTTP and no NFC of its own,
 // so it is safe to call from appLoop() right after a link.
 void showTagWriteAskPopup(int spool_id);
+// The same question for a given TagFormat instead of the one in Settings.
+// TAG_FMT_CREALITY asks in its own words: a blank tag becomes a CFS tag.
+void showTagWriteAskPopupFmt(int spool_id, uint8_t fmt);
 
 // Asks whether to erase the tag as well. Parked rather than built, because the
 // unlink that leads here runs inside an LVGL callback and tears down its own
