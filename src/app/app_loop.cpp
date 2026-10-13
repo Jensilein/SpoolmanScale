@@ -2000,7 +2000,12 @@ void appLoop() {
         static char recover_uid[24] = "";
         static int recover_count = 0;
         bool recovered = false;
+        // Only for the first seconds after the tag last answered: a Creality
+        // tag sits off-centre on the flange, and a spool turned so the tag is
+        // out of the reader's reach (13.10.2026) does not come back from any
+        // wake. Beyond that the usual grace period decides.
         if (tag_present && creality_decoded && last_uid_len == 4 &&
+            millis() - last_tag_seen_ms < 3000 &&
             millis() - last_presence_recover_ms >= 400) {
           last_presence_recover_ms = millis();
           const int w = crealityRecoverCard(g_tag.uid, g_tag.uid_str);
