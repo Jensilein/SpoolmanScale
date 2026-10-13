@@ -174,6 +174,12 @@ static bool loc_left_pad = false;
 // They stay pending and fire when the weight goes, because the reader, having
 // lost the tag already, will report no removal when the spool is lifted.
 static bool loc_kept = false;
+// The tag went silent but the weight on the pad did not move: the spool is
+// still there, so it stays present (13.10.2026, hardware: tags read off-centre
+// on a side-mounted reader stop answering after a few seconds). Released the
+// moment the weight changes or the tag answers again. While set, the weight
+// reference stays frozen at what the pad carried when the tag was last read.
+static bool tag_kept_by_weight = false;
 
 // Did the spool actually leave, or did the reader merely lose the tag?
 //
@@ -1331,7 +1337,7 @@ void appLoop() {
     // reference followed the spool all the way down as it was lifted, which
     // also left the location cross-check below permanently mute.
     // nfc_fast_polls is the counter that actually rises on a missed read.
-    if (tag_present && nfc_fast_polls == 0) {
+    if (tag_present && nfc_fast_polls == 0 && !tag_kept_by_weight) {
       if (loc_weight_since_ms == 0) {
         // A fresh presence: start the stability window over, and do not carry
         // the previous spool's settled value into it.
@@ -1821,6 +1827,7 @@ void appLoop() {
       nfc_stat_scans++;
       if (found) {
         last_uid_len = uidLen;
+        tag_kept_by_weight = false;
         // Only a genuinely long absence earns a fresh set of retries. Without
         // this a tag that keeps failing to authenticate would be re-scanned
         // indefinitely, five seconds per attempt.
@@ -2265,11 +2272,24 @@ void appLoop() {
         static char recover_uid[24] = "";
         static int recover_count = 0;
         bool recovered = false;
+        // Held by the weight: nothing to count while the pad still carries
+        // what it carried when the tag was last read.
+        bool held = false;
+        if (tag_present && tag_kept_by_weight) {
+          if (weightSaysSpoolStayed()) {
+            held = true;
+            last_tag_seen_ms = millis();
+          } else {
+            tag_kept_by_weight = false;
+            logSDf("NFC: the weight moved (%.0fg, was %.0fg) - checking the tag again",
+                   scale_weight_g, loc_weight_ref);
+          }
+        }
         // Only for the first seconds after the tag last answered: a Creality
         // tag sits off-centre on the flange, and a spool turned so the tag is
         // out of the reader's reach (13.10.2026) does not come back from any
         // wake. Beyond that the usual grace period decides.
-        if (tag_present && (creality_decoded || blank_mifare) && last_uid_len == 4 &&
+        if (!held && tag_present && (creality_decoded || blank_mifare) && last_uid_len == 4 &&
             millis() - last_tag_seen_ms < 3000 &&
             millis() - last_presence_recover_ms >= 400) {
           last_presence_recover_ms = millis();
@@ -2286,7 +2306,10 @@ void appLoop() {
             }
           }
         }
-        if (recovered) {
+        if (held) {
+          nfc_fast_polls = 0;
+          nfc_miss_streak = 0;
+        } else if (recovered) {
           last_tag_seen_ms = millis();
           nfc_fast_polls = 0;
           nfc_miss_streak = 0;
@@ -2318,7 +2341,15 @@ void appLoop() {
           // the fast re-polls, and the location question back by 2.5 s.
           const bool weight_gone = weightSaysSpoolGone() &&
                                    nfc_fast_polls >= NFC_GONE_MIN_MISSES;
-          if (weight_gone || (!retrying && millis() - first_miss_ms >= absent_limit)) {
+          if (!weight_gone && !retrying && millis() - first_miss_ms >= absent_limit &&
+              weightSaysSpoolStayed()) {
+            // Silent tag, unchanged weight: the spool is still lying there.
+            tag_kept_by_weight = true;
+            nfc_fast_polls = 0;
+            last_tag_seen_ms = millis();
+            logSDf("NFC: tag silent, but the pad still carries %.0fg of %.0fg - spool stays present",
+                   scale_weight_g, loc_weight_ref);
+          } else if (weight_gone || (!retrying && millis() - first_miss_ms >= absent_limit)) {
             nfc_stat_removals++;
             bambuScanReport();   // a Bambu tag that left before its reads settled
             Serial.printf("NFC: tag removed (gap %u ms, %d fast re-polls, %s)\n",
