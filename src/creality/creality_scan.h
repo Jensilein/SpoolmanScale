@@ -37,3 +37,11 @@ enum CrealityWriteResult {
 // key B; sector 2 gets spaces, as Creality's own tags carry. The write is
 // read back with the new key before it counts. uid_out receives the UID.
 CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4]);
+
+// Whether the card on the reader is a blank MIFARE Classic tag: sector 1
+// opens with the factory key FFFFFFFFFFFF and its data blocks hold nothing.
+// A blank tag refuses every Bambu and Creality key, and each refusal knocks
+// it off the reader for a while, so the main poll lost it within two seconds
+// and a link made on it found no UID any more (13.10.2026). The card is left
+// selectable either way.
+bool crealityProbeBlank(const uint8_t uid[4], const char* uid_str);

@@ -101,6 +101,7 @@ void tagFamilySet(const uint8_t uid[4], TagFamily family) {
   logSDf("NFC: %02X:%02X:%02X:%02X remembered as %s", uid[0], uid[1], uid[2], uid[3],
          family == TAG_FAMILY_CREALITY ? "Creality" :
          family == TAG_FAMILY_BAMBU ? "Bambu" :
-         family == TAG_FAMILY_NOT_CREALITY ? "not Creality (this session)" : "unknown");
+         family == TAG_FAMILY_NOT_CREALITY ? "not Creality (this session)" :
+         family == TAG_FAMILY_BLANK ? "blank (this session)" : "unknown");
   if (was_stored || now_stored) save();
 }

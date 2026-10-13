@@ -21,6 +21,11 @@
 //                             tag alternates Creality first / Bambu first until
 //                             one of them reads it. A Creality tag that was
 //                             merely badly placed gets Creality again.
+//    TAG_FAMILY_BLANK         sector 1 opened with the factory key and held
+//                             nothing: a blank tag, which a refused key would
+//                             only knock off the reader. Probed with the
+//                             factory key first on the next placement. RAM
+//                             only; writing the tag makes it Creality.
 //
 //  Creality and Bambu are stored in NVS (one string, at most 48 UIDs, the
 //  oldest dropped first) and survive a restart. A write happens only when a
@@ -32,6 +37,7 @@ enum TagFamily : char {
   TAG_FAMILY_CREALITY     = 'C',
   TAG_FAMILY_BAMBU        = 'B',
   TAG_FAMILY_NOT_CREALITY = 'n',
+  TAG_FAMILY_BLANK        = '0',
 };
 
 TagFamily tagFamilyGet(const uint8_t uid[4]);

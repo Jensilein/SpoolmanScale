@@ -1797,6 +1797,7 @@ void appLoop() {
     static bool bambu_uid_probed = false;   // see NFC_UID_PROBE_AFTER_RETRIES
     static bool snapmaker_decoded = false;  // this placement read as a Snapmaker tag
     static bool creality_decoded = false;   // this placement read as a Creality CFS tag
+    static bool blank_mifare = false;       // this placement is a blank MIFARE tag
     static bool new_placement = false;      // same tag back after a long absence
     static unsigned long last_nfc_stats_ms = 0;
     static uint8_t last_uid_len = 0;   // 4 = Bambu, 7 = NTAG, for the removal delay
@@ -1899,6 +1900,7 @@ void appLoop() {
           bambu_uid_probed = false;
           snapmaker_decoded = false;
           creality_decoded = false;
+          blank_mifare = false;
           lv_label_set_text(lbl_nfc_dot, LV_SYMBOL_BULLET);
           lv_obj_set_style_text_color(lbl_nfc_dot, lv_color_hex(UI_COL_GOOD), 0);
           lv_label_set_text(lbl_status, T(STR_READING_TAG));
@@ -1913,7 +1915,16 @@ void appLoop() {
           // no Snapmaker probe, and the branch below for a plain 4 byte card
           // looks the spool up by its UID. A tag that does not open is woken
           // again inside scanCrealityTag(), so the Bambu scan still finds it.
-          const TagFamily family = tagFamilyGet(uid);
+          TagFamily family = tagFamilyGet(uid);
+          // A tag known to be blank is asked with the factory key first, on
+          // the card the poll has just selected, so it never sees a refusal.
+          // One that has been written since (FilaStation, CFTag) refuses it
+          // and goes through the family choice as an unknown tag.
+          bool blank_now = false;
+          if (g_creality_tags && family == TAG_FAMILY_BLANK) {
+            blank_now = crealityProbeBlank(uid, uid_str);
+            if (!blank_now) { tagFamilySet(uid, TAG_FAMILY_UNKNOWN); family = TAG_FAMILY_UNKNOWN; }
+          }
           const bool creality_first = g_creality_tags &&
               (family == TAG_FAMILY_UNKNOWN || family == TAG_FAMILY_CREALITY);
           // An unknown tag alternates between placements: Creality first, then
@@ -1924,7 +1935,9 @@ void appLoop() {
           // that keeps dropping out never runs them out. So the mark is used
           // once and dropped right here.
           if (family == TAG_FAMILY_NOT_CREALITY) tagFamilySet(uid, TAG_FAMILY_UNKNOWN);
-          if (creality_first &&
+          if (blank_now) {
+            // Handled below, like a blank tag found after the Creality probe.
+          } else if (creality_first &&
               scanCrealityTag(uid, uidLen, /*fresh=*/true) == CREALITY_SCAN_OK) {
             creality_decoded = true;
             tagFamilySet(uid, TAG_FAMILY_CREALITY);
@@ -1939,6 +1952,13 @@ void appLoop() {
             memset(&g_tag, 0, sizeof(g_tag));
             memcpy(g_tag.uid, uid, 4);
             snprintf(g_tag.uid_str, sizeof(g_tag.uid_str), "%s", uid_str);
+          } else if (creality_first && family == TAG_FAMILY_UNKNOWN &&
+                     crealityProbeBlank(uid, uid_str)) {
+            // Refused the Creality key, opens with the factory key: a blank
+            // sticker, most likely waiting to be linked and written as a CFS
+            // tag. The Bambu probe would refuse it too and knock it off the
+            // reader (13.10.2026), so it is not run at all.
+            blank_now = true;
           } else {
             // Bambu first on the next placement (once, see above).
             if (creality_first && family == TAG_FAMILY_UNKNOWN) {
@@ -1955,7 +1975,19 @@ void appLoop() {
           // with nothing. A tag that answers to Snapmaker's keys is no Bambu
           // tag, so the Bambu retries are skipped and the branch below for a
           // plain 4 byte card looks the spool up by its UID.
-          if (creality_decoded) {
+          if (blank_now) {
+            blank_mifare = true;
+            tagFamilySet(uid, TAG_FAMILY_BLANK);
+            // A clean record for this UID: looked up by its UID like any
+            // plain 4 byte card, once the retries count as spent.
+            memset(&g_tag, 0, sizeof(g_tag));
+            memcpy(g_tag.uid, uid, 4);
+            snprintf(g_tag.uid_str, sizeof(g_tag.uid_str), "%s", uid_str);
+            snprintf(g_tag.tray_uuid, sizeof(g_tag.tray_uuid), "%s", uid_str);
+            nfc_retry_count = NFC_MAX_RETRIES;
+            last_nfc_check_ms = 0;
+          }
+          if (creality_decoded || blank_now) {
             // Already settled above.
           } else if (g_snapmaker_tags && countBambuDataBlocksRead(g_tag) == 0 &&
               scanSnapmakerTag(uid, uidLen) != SNAPMAKER_SCAN_NO_AUTH) {
@@ -2189,7 +2221,7 @@ void appLoop() {
         // tag sits off-centre on the flange, and a spool turned so the tag is
         // out of the reader's reach (13.10.2026) does not come back from any
         // wake. Beyond that the usual grace period decides.
-        if (tag_present && creality_decoded && last_uid_len == 4 &&
+        if (tag_present && (creality_decoded || blank_mifare) && last_uid_len == 4 &&
             millis() - last_tag_seen_ms < 3000 &&
             millis() - last_presence_recover_ms >= 400) {
           last_presence_recover_ms = millis();

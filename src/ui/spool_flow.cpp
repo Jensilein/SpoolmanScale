@@ -1396,7 +1396,21 @@ static void armLinkFollowUps(int spool_id, bool is_bambu) {
 
 }
 
+// The UID the link was started for, kept while the user picks a spool. The
+// tag display, and link_tag_uid with it, is cleared a few seconds after the
+// tag stops answering, and a 4 byte tag that refused a key can stop answering
+// while it still lies on the pad: on 13.10.2026 every link of a blank MIFARE
+// tag ended in "no tag UID". The user chose the spool for the tag that was
+// there when they pressed Link, so that is the one bound.
+static char s_link_uid_hold[24] = "";
+
 void doLinkPatch(int spool_id, bool is_bambu) {
+  if (!is_bambu && !link_tag_uid[0] && s_link_uid_hold[0]) {
+    logSDf("Link: %s dropped off the reader while the spool was picked, linking it anyway",
+           s_link_uid_hold);
+    snprintf(link_tag_uid, sizeof(link_tag_uid), "%s", s_link_uid_hold);
+  }
+  s_link_uid_hold[0] = '\0';
   doLinkPatchUid(spool_id, is_bambu, is_bambu ? g_tag.tray_uuid : link_tag_uid);
 }
 
@@ -3542,6 +3556,7 @@ void flowCloseButton(lv_obj_t* parent, lv_event_cb_t cb) {
 
 void showLinkEntryPopup(bool is_bambu) {
   logSDf("SHOW: LinkEntryPopup bambu=%d", (int)is_bambu);
+  snprintf(s_link_uid_hold, sizeof(s_link_uid_hold), "%s", is_bambu ? "" : link_tag_uid);
   link_selected_material[0] = 0;  // reset material selection for each new flow
   link_selected_material_full[0] = 0;
   link_stage3_shown = false;

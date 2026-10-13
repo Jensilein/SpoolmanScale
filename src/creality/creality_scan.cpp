@@ -174,7 +174,16 @@ static bool blockIsBlank(const uint8_t b[16]) {
 CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4]) {
   uint8_t uid[NFC_UID_MAX] = {0};
   uint8_t uid_len = 0;
-  if (!nfcReadPassiveTarget(uid, &uid_len, 600) || uid_len != 4) {
+  bool found = nfcReadPassiveTarget(uid, &uid_len, 600);
+  // A card that refused a key earlier may not answer a plain poll; release
+  // it, then reset the field once, before giving up.
+  if (!found) { nfcInRelease(); found = nfcReadPassiveTarget(uid, &uid_len, 300); }
+  if (!found && (nfcRfFieldCycle() & NFC_RF_CHIP_OK)) {
+    delay(30);
+    found = nfcReadPassiveTarget(uid, &uid_len, 300);
+  }
+  if (!found || uid_len != 4) {
+    logSD("CFS write: no 4 byte tag on the reader");
     return CREALITY_WRITE_NO_TAG;
   }
   memcpy(uid_out, uid, 4);
@@ -283,4 +292,22 @@ CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4]) {
   tagFamilySet(uid, TAG_FAMILY_CREALITY);
   logSDf("CFS write: %s written and verified (%.40s)", uid_str, rec40);
   return CREALITY_WRITE_OK;
+}
+
+bool crealityProbeBlank(const uint8_t uid[4], const char* uid_str) {
+  bool silent = false;
+  if (!nfcAuthMifareSector(1, FACTORY_KEY, uid, NFC_KEY_A)) {
+    wakeCard(uid, uid_str, &silent);   // for whichever probe comes next
+    return false;
+  }
+  bool blank = true;
+  for (int b = 0; b < 3 && blank; b++) {
+    uint8_t d[16];
+    blank = nfcReadMifareBlock(4 + b, d) && blockIsBlank(d);
+  }
+  // After an authentication the card does not answer the next poll.
+  int back = wakeCard(uid, uid_str, &silent);
+  logSDf("NFC: %s opens with the factory key, %s (woke=%d)", uid_str,
+         blank ? "blank" : "but sector 1 holds data", back);
+  return blank;
 }
