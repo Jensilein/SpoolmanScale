@@ -24,7 +24,9 @@
 void showTagWriteAskPopup(int spool_id);
 // The same question for a given TagFormat instead of the one in Settings.
 // TAG_FMT_CREALITY asks in its own words: a blank tag becomes a CFS tag.
-void showTagWriteAskPopupFmt(int spool_id, uint8_t fmt);
+// variant, Creality only: 0 = blank tag, 1 = own tag whose spool changed,
+// 2 = original (or foreign) Creality tag on a spool that was refilled.
+void showTagWriteAskPopupFmt(int spool_id, uint8_t fmt, uint8_t variant = 0);
 // Whether the CFS write has been offered for this tag UID already.
 bool tagCfsAskedFor(const char *uid);
 

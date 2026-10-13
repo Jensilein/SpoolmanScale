@@ -1222,6 +1222,9 @@ static int tagwrite_after_link_id = 0;
 // The format that question writes: the setting, or Creality CFS for a blank
 // MIFARE tag (see armLinkFollowUps()).
 static uint8_t tagwrite_after_link_fmt = 0;
+// For a Creality tag that was linked: compare it with the spool before asking
+// (the answer decides between "update", "overwrite" and no question at all).
+static bool tagwrite_after_link_check = false;
 
 // Same idea for the second tag question, and picked up in the same handler -
 // but only once the tag write above is out of the way, or the two would fight
@@ -1348,6 +1351,15 @@ static bool blankMifareCandidate() {
   return true;
 }
 
+// The tag just linked is the Creality tag the poll read: same UID, decoded.
+static bool linkedCrealityTag() {
+  if (strlen(g_tag.uid_str) != 11 || strcmp(g_tag.decoder, "Creality") != 0) return false;
+  unsigned b[4];
+  if (sscanf(g_tag.uid_str, "%2x:%2x:%2x:%2x", &b[0], &b[1], &b[2], &b[3]) != 4) return false;
+  const uint8_t uid[4] = {(uint8_t)b[0], (uint8_t)b[1], (uint8_t)b[2], (uint8_t)b[3]};
+  return memcmp(g_tag.uid, uid, 4) == 0;
+}
+
 static void armLinkFollowUps(int spool_id, bool is_bambu) {
   // The spool is known and an NTAG is lying on the reader, so its data could go
   // onto the tag as well. Three things have to hold before that is worth
@@ -1370,6 +1382,7 @@ static void armLinkFollowUps(int spool_id, bool is_bambu) {
     if (fits) {
       tagwrite_after_link_id  = spool_id;
       tagwrite_after_link_fmt = g_tagwrite_fmt;
+      tagwrite_after_link_check = false;
     }
     else logSDf("Tag write: not asking, %u bytes on the tag is too small for %s",
                 (unsigned)have, tagFormatLabel(g_tagwrite_fmt));
@@ -1384,6 +1397,14 @@ static void armLinkFollowUps(int spool_id, bool is_bambu) {
            g_tag.uid_str);
     tagwrite_after_link_id  = spool_id;
     tagwrite_after_link_fmt = TAG_FMT_CREALITY;
+    tagwrite_after_link_check = false;
+  } else if (g_creality_tags && !is_bambu && linkedCrealityTag()) {
+    // A Creality tag bound to a spool: when the tag describes another
+    // filament - an original tag on a refilled spool, or a tag of ours whose
+    // spool was changed - the next pass offers to write the spool's data.
+    tagwrite_after_link_id    = spool_id;
+    tagwrite_after_link_fmt   = TAG_FMT_CREALITY;
+    tagwrite_after_link_check = true;
   }
 
   // The tag on the other flange, once the write above has settled. Three
@@ -4209,7 +4230,13 @@ void handleSpoolFlowDeferredActions() {
     // way and its result still appears, because a tag that silently failed to
     // take the record would be the worst of both.
     // A CFS write is always asked: it changes the tag's keys for good.
-    if (tagwrite_after_link_fmt == TAG_FMT_CREALITY)  showTagWriteAskPopupFmt(id, TAG_FMT_CREALITY);
+    if (tagwrite_after_link_fmt == TAG_FMT_CREALITY && tagwrite_after_link_check) {
+      tagwrite_after_link_check = false;
+      bool own = false, differs = false;
+      if (tagCrealityCheck(id, g_tag.uid_str, &own, &differs) && differs)
+        showTagWriteAskPopupFmt(id, TAG_FMT_CREALITY, own ? 1 : 2);
+    }
+    else if (tagwrite_after_link_fmt == TAG_FMT_CREALITY)  showTagWriteAskPopupFmt(id, TAG_FMT_CREALITY);
     else if (g_tagwrite_mode == TAGWRITE_ALWAYS)      startTagWriteNoAsk(id);
     else                                              showTagWriteAskPopup(id);
   }

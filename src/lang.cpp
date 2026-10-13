@@ -3205,6 +3205,15 @@ const char* const STRINGS[][3] = {
   { "Der Tag antwortet nicht. Spule kurz anheben und wieder genauso hinstellen.",
     "The tag does not answer. Lift the spool briefly and put it back the same way.",
     "Le tag ne répond pas. Soulevez brièvement la bobine et reposez-la de la même façon." },  // STR_TW_CFS_REPLACE
+  { "CFS-Tag aktualisieren?", "Update the CFS tag?", "Mettre à jour le tag CFS ?" },  // STR_TW_CFS_UPD_TITLE
+  { "In Spoolman stehen andere Daten als auf dem Tag. Er wird mit den aktuellen Daten neu beschrieben.",
+    "Spoolman holds different data than the tag. It is written again with the current data.",
+    "Spoolman contient d'autres données que le tag. Il est réécrit avec les données actuelles." },  // STR_TW_CFS_UPD_HINT
+  { "Creality-Tag überschreiben?", "Overwrite the Creality tag?",
+    "Écraser le tag Creality ?" },  // STR_TW_CFS_OVR_TITLE
+  { "Der Tag trägt die Daten eines anderen Filaments. Nur überschreiben, wenn die Spule neu bespult wurde.",
+    "The tag carries another filament's data. Only overwrite it if the spool has been refilled.",
+    "Le tag porte les données d'un autre filament. À n'écraser que si la bobine a été rembobinée." },  // STR_TW_CFS_OVR_HINT
 };
 
 StringID tagWriteResultString(uint8_t code) {

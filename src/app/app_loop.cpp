@@ -1798,6 +1798,7 @@ void appLoop() {
     static bool snapmaker_decoded = false;  // this placement read as a Snapmaker tag
     static bool creality_decoded = false;   // this placement read as a Creality CFS tag
     static bool blank_mifare = false;       // this placement is a blank MIFARE tag
+    static char cfs_checked_uid[24] = "";   // own CFS tag compared with Spoolman this placement
     static bool new_placement = false;      // same tag back after a long absence
     static unsigned long last_nfc_stats_ms = 0;
     static uint8_t last_uid_len = 0;   // 4 = Bambu, 7 = NTAG, for the removal delay
@@ -1901,6 +1902,7 @@ void appLoop() {
           snapmaker_decoded = false;
           creality_decoded = false;
           blank_mifare = false;
+          cfs_checked_uid[0] = '\0';
           lv_label_set_text(lbl_nfc_dot, LV_SYMBOL_BULLET);
           lv_obj_set_style_text_color(lbl_nfc_dot, lv_color_hex(UI_COL_GOOD), 0);
           lv_label_set_text(lbl_status, T(STR_READING_TAG));
@@ -2135,6 +2137,20 @@ void appLoop() {
           logSDf("Tag write: %s is blank and belongs to spool %d, offering Creality CFS",
                  uid_str, sm_id);
           showTagWriteAskPopupFmt(sm_id, TAG_FMT_CREALITY);
+        }
+        // A Creality tag the scales wrote themselves (its UID in the spool's
+        // nfc_uid) whose spool has changed since - another colour, material
+        // or weight in Spoolman: offer to write it again. Once per placement;
+        // original and CFtag tags are only offered that after a link.
+        if (creality_decoded && g_creality_tags && sm_found && sm_id > 0 &&
+            strcmp(cfs_checked_uid, uid_str) != 0 && strcmp(g_tag.uid_str, uid_str) == 0 &&
+            !lookupPending() && !isTagWritePopupOpen() && !isConfirmPopupOpen() &&
+            !isSpoolFlowLinkEntryOpen() && !isSpoolFlowIdInputOpen() &&
+            !isSecondTagPopupOpen() && strcmp(tagWriteState(), "pending") != 0) {
+          snprintf(cfs_checked_uid, sizeof(cfs_checked_uid), "%s", uid_str);
+          bool own = false, differs = false;
+          if (tagCrealityCheck(sm_id, uid_str, &own, &differs) && own && differs)
+            showTagWriteAskPopupFmt(sm_id, TAG_FMT_CREALITY, 1);
         }
       } else if (found && uidLen == 7) {
         // ── NTAG detected ──────────────────────────────────────

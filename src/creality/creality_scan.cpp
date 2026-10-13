@@ -10,6 +10,23 @@
 #include <cstring>
 #include <stdio.h>
 
+// The plain record of the Creality tag read (or written) last, for the
+// comparison with Spoolman. One tag at a time is all the scale handles.
+static uint8_t s_rec_uid[4];
+static char    s_rec[41] = "";
+
+void crealityRememberRecord(const uint8_t uid[4], const char rec40[40]) {
+  memcpy(s_rec_uid, uid, 4);
+  memcpy(s_rec, rec40, 40);
+  s_rec[40] = '\0';
+}
+
+bool crealityLastRecord(const uint8_t uid[4], char out[41]) {
+  if (!s_rec[0] || memcmp(uid, s_rec_uid, 4) != 0) return false;
+  memcpy(out, s_rec, 41);
+  return true;
+}
+
 // Gets a card back that a refused key has left unreachable. Returns how it
 // answered: 1 = plain wake, 2 = after the reader released its target,
 // 3..4 = after one or two RF field cycles, 0 = not at all.
@@ -91,6 +108,11 @@ CrealityScanResult scanCrealityTag(uint8_t *uid, uint8_t uid_len, bool fresh) {
   if (!crealityDecode(blocks, &t)) {
     logSDf("NFC: %s opens with the Creality key but holds no Creality record", uid_str);
     return CREALITY_SCAN_GARBLED;
+  }
+  {
+    uint8_t enc[48], plain[48];
+    for (int b = 0; b < 3; b++) memcpy(enc + b * 16, blocks[b], 16);
+    if (crealityDecrypt48(enc, plain)) crealityRememberRecord(uid, (const char*)plain);
   }
 
   memset(&g_tag, 0, sizeof(g_tag));
@@ -199,8 +221,45 @@ static bool waitForCard(uint8_t uid[NFC_UID_MAX], uint8_t* uid_len,
   return false;
 }
 
+// Reads sector 1 back with the UID's key and compares it with what was
+// written. A card that has gone quiet after the write is read once it has
+// been put back.
+static CrealityWriteResult verifyWritten(const uint8_t* uid, const char* uid_str,
+                                         uint8_t key[6], const uint8_t cipher[48],
+                                         const char rec40[40], CrealityWaitFn wait,
+                                         bool silent) {
+  uint8_t u[4];
+  memcpy(u, uid, 4);
+  int woke = silent ? 0 : wakeCard(u, uid_str, &silent);
+  if (!woke) {
+    uint8_t again[NFC_UID_MAX];
+    uint8_t again_len = 0;
+    silent = false;
+    logSDf("CFS write: %s written, waiting for it to answer for the check", uid_str);
+    if (waitForCard(again, &again_len, u, wait)) woke = 1;
+  }
+  uint8_t back[4][16];
+  bool verified = false;
+  if (woke && !silent && nfcReadMifareSector(1, key, u, back, NFC_KEY_A)) {
+    verified = memcmp(back[0], cipher, 16) == 0 &&
+               memcmp(back[1], cipher + 16, 16) == 0 &&
+               memcmp(back[2], cipher + 32, 16) == 0;
+  }
+  if (!silent) wakeCard(u, uid_str, &silent);
+  if (!verified) {
+    logSDf("CFS write: %s did not read back as written", uid_str);
+    return CREALITY_WRITE_VERIFY_FAILED;
+  }
+  tagFamilySet(u, TAG_FAMILY_CREALITY);
+  // What the next comparison with Spoolman sees for this tag.
+  crealityRememberRecord(u, rec40);
+  logSDf("CFS write: %s written and verified (%.40s)", uid_str, rec40);
+  return CREALITY_WRITE_OK;
+}
+
 CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4],
-                                     const uint8_t* expect, CrealityWaitFn wait) {
+                                     const uint8_t* expect, CrealityWaitFn wait,
+                                     bool overwrite) {
   uint8_t uid[NFC_UID_MAX] = {0};
   uint8_t uid_len = 0;
   auto right_card = [&]() {
@@ -255,11 +314,34 @@ CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4],
     if (woke && !silent && nfcReadMifareSector(1, key, uid, blocks, NFC_KEY_A)) {
       CrealityTag t;
       const bool rec = crealityDecode(blocks, &t);
-      logSDf("CFS write: %s already opens with the Creality key%s - not written",
+      if (!overwrite) {
+        logSDf("CFS write: %s already opens with the Creality key%s - not written",
+               uid_str, rec ? " and holds a record" : "");
+        wakeCard(uid, uid_str, &silent);
+        if (rec) tagFamilySet(uid, TAG_FAMILY_CREALITY);
+        return CREALITY_WRITE_IS_CREALITY;
+      }
+      // Asked for: a tag of ours whose spool changed, or an original one on
+      // a spool that has been refilled. The card is authenticated with key A
+      // from the read; the keys stay as they are, only blocks 4..6 change.
+      logSDf("CFS write: %s opens with the Creality key%s - overwriting as asked",
              uid_str, rec ? " and holds a record" : "");
-      wakeCard(uid, uid_str, &silent);
-      if (rec) tagFamilySet(uid, TAG_FAMILY_CREALITY);
-      return CREALITY_WRITE_IS_CREALITY;
+      bool wrote = true;
+      for (int b = 0; b < 3 && wrote; b++) wrote = nfcWriteMifareBlock(4 + b, cipher + b * 16);
+      if (!wrote) {
+        // Some writers lock the data blocks to key B. Same key on Creality's
+        // own tags, so it is tried once before giving up.
+        logSDf("CFS write: %s refused the write with key A, trying key B", uid_str);
+        wrote = wakeCard(uid, uid_str, &silent) && !silent &&
+                nfcAuthMifareSector(1, key, uid, NFC_KEY_B);
+        for (int b = 0; b < 3 && wrote; b++) wrote = nfcWriteMifareBlock(4 + b, cipher + b * 16);
+      }
+      if (!wrote) {
+        logSDf("CFS write: %s refused the overwrite", uid_str);
+        if (!silent) wakeCard(uid, uid_str, &silent);
+        return CREALITY_WRITE_FAILED;
+      }
+      return verifyWritten(uid, uid_str, key, cipher, rec40, wait, silent);
     }
     logSDf("CFS write: %s refuses the factory key - not a blank tag, not written", uid_str);
     if (!silent) wakeCard(uid, uid_str, &silent);
@@ -322,32 +404,8 @@ CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4],
     logSDf("CFS write: %s sector 2 not on the factory key, left as it is", uid_str);
   }
 
-  // 4. Read it back the way the scale and the printer will. A card that has
-  //    gone quiet after the write is read once it has been put back.
-  int woke = silent ? 0 : wakeCard(uid, uid_str, &silent);
-  if (!woke) {
-    uint8_t again[NFC_UID_MAX];
-    uint8_t again_len = 0;
-    silent = false;
-    logSDf("CFS write: %s written, waiting for it to answer for the check", uid_str);
-    if (waitForCard(again, &again_len, uid, wait)) woke = 1;
-  }
-  uint8_t back[4][16];
-  bool verified = false;
-  if (woke && !silent && nfcReadMifareSector(1, key, uid, back, NFC_KEY_A)) {
-    verified = memcmp(back[0], cipher, 16) == 0 &&
-               memcmp(back[1], cipher + 16, 16) == 0 &&
-               memcmp(back[2], cipher + 32, 16) == 0;
-  }
-  if (!silent) wakeCard(uid, uid_str, &silent);
-  if (!verified) {
-    logSDf("CFS write: %s did not read back as written", uid_str);
-    return CREALITY_WRITE_VERIFY_FAILED;
-  }
-
-  tagFamilySet(uid, TAG_FAMILY_CREALITY);
-  logSDf("CFS write: %s written and verified (%.40s)", uid_str, rec40);
-  return CREALITY_WRITE_OK;
+  // 4. Read it back the way the scale and the printer will.
+  return verifyWritten(uid, uid_str, key, cipher, rec40, wait, silent);
 }
 
 int crealityProbeFactory(const uint8_t uid[4], const char* uid_str) {

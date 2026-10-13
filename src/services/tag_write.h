@@ -65,7 +65,16 @@ void tagWriteSetProgress(TagWriteProgressFn fn);
 // empty for any), and a callback while it waits for a tag that does not
 // answer to be put back - phase 0 once, then 1 about every 150 ms. Both are
 // used by one write and then forgotten.
-void tagWriteCfsTarget(const char* uid_str, void (*wait)(int phase));
+// overwrite: the tag may already be a Creality tag (an own tag whose spool
+// changed, or an original on a refilled spool); only on an explicit answer.
+void tagWriteCfsTarget(const char* uid_str, void (*wait)(int phase), bool overwrite = false);
+
+// Compares the Creality tag on the reader (as last read) with what the spool
+// in Spoolman would put on it now. own: the UID is in the spool's nfc_uid,
+// so a scale wrote it. differs: anything but the date is different. False
+// when it could not be decided (no record for that UID, spool not fetched).
+// Fetches the spool: loop task only.
+bool tagCrealityCheck(int spool_id, const char* uid_str, bool* own, bool* differs);
 
 // Parks a request. The write itself runs in tagWriteTick(), because the NFC
 // bus belongs to the loop task and the HTTP handler is not on it.

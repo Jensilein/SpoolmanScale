@@ -45,6 +45,8 @@ static uint8_t  s_write_fmt     = 0;
 // and not on every poll. Cleared when that write found no tag, so putting the
 // spool back offers it again.
 static char     s_cfs_asked_uid[24] = "";
+// 0 = blank tag, 1 = own tag to update, 2 = original tag to overwrite.
+static uint8_t  s_cfs_variant = 0;
 
 // While a CFS write waits for a tag that stopped answering: say so on the
 // busy card, and keep the screen drawing. Runs inside tagWriteTick().
@@ -54,7 +56,8 @@ static void cfsWaitNotice(int phase) {
 }
 
 static void armCfsTarget() {
-  if (s_write_fmt == TAG_FMT_CREALITY) tagWriteCfsTarget(s_cfs_asked_uid, cfsWaitNotice);
+  if (s_write_fmt == TAG_FMT_CREALITY)
+    tagWriteCfsTarget(s_cfs_asked_uid, cfsWaitNotice, s_cfs_variant != 0);
 }
 
 bool tagCfsAskedFor(const char *uid) {
@@ -261,6 +264,7 @@ void startTagWriteNoAsk(int spool_id) {
   s_spool_id = spool_id;
   s_mode     = ASK_WRITE;
   s_write_fmt = g_tagwrite_fmt;
+  s_cfs_variant = 0;
   logSDf("TagWrite: writing spool %d without asking", spool_id);
   // A question about the same tag waiting to be shown is answered by this.
   mismatch_ask_pending = false;
@@ -279,15 +283,21 @@ void showTagWriteAskPopup(int spool_id) {
   showTagWriteAskPopupFmt(spool_id, g_tagwrite_fmt);
 }
 
-void showTagWriteAskPopupFmt(int spool_id, uint8_t fmt) {
+void showTagWriteAskPopupFmt(int spool_id, uint8_t fmt, uint8_t variant) {
   if (scr_tag_write || spool_id <= 0) return;
   s_spool_id  = spool_id;
   s_mode      = ASK_WRITE;
   s_write_fmt = fmt;
+  s_cfs_variant = (fmt == TAG_FMT_CREALITY) ? variant : 0;
   if (fmt == TAG_FMT_CREALITY)
     snprintf(s_cfs_asked_uid, sizeof(s_cfs_asked_uid), "%s", g_tag.uid_str);
-  logSDf("SHOW: TagWriteAskPopup spool=%d fmt=%s", spool_id, tagFormatLabel(fmt));
-  if (fmt == TAG_FMT_CREALITY)
+  logSDf("SHOW: TagWriteAskPopup spool=%d fmt=%s variant=%u", spool_id, tagFormatLabel(fmt),
+         (unsigned)s_cfs_variant);
+  if (fmt == TAG_FMT_CREALITY && variant == 1)
+    buildAsk(STR_TW_CFS_UPD_TITLE, STR_TW_CFS_UPD_HINT, STR_TW_BTN_REWRITE, STR_TW_BTN_SKIP);
+  else if (fmt == TAG_FMT_CREALITY && variant == 2)
+    buildAsk(STR_TW_CFS_OVR_TITLE, STR_TW_CFS_OVR_HINT, STR_TW_BTN_REWRITE, STR_TW_BTN_SKIP);
+  else if (fmt == TAG_FMT_CREALITY)
     buildAsk(STR_TW_CFS_ASK_TITLE, STR_TW_CFS_ASK_HINT, STR_TW_BTN_WRITE, STR_TW_BTN_SKIP);
   else
     buildAsk(STR_TW_ASK_TITLE, STR_TW_ASK_HINT, STR_TW_BTN_WRITE, STR_TW_BTN_SKIP);
@@ -318,6 +328,7 @@ static void showTagMismatchPopup() {
   if (scr_tag_write || !s_mismatch_detail[0]) return;
   s_mode = ASK_REWRITE;
   s_write_fmt = g_tagwrite_fmt;
+  s_cfs_variant = 0;
   logSDf("SHOW: TagMismatchPopup spool=%d", s_spool_id);
   buildAsk(STR_TW_MISM_TITLE, STR_TW_MISM_HINT, STR_TW_BTN_REWRITE, STR_TW_BTN_KEEP);
 }

@@ -19,6 +19,7 @@
 #include "creality/creality_tag.h"
 #include "services/backend.h"
 #include "services/backend_api.h"
+#include "services/spoolman_api.h"
 #include "services/filaman_api.h"
 #include "services/tag_field.h"
 #include "services/tag_link.h"
@@ -1349,27 +1350,79 @@ static bool writeSpoolRecord(int spool_id, TagFormat fmt,
 static bool     s_cfs_has_expect = false;
 static uint8_t  s_cfs_expect[4];
 static void   (*s_cfs_wait)(int) = nullptr;
+static bool     s_cfs_overwrite = false;
 
-void tagWriteCfsTarget(const char* uid_str, void (*wait)(int phase)) {
+void tagWriteCfsTarget(const char* uid_str, void (*wait)(int phase), bool overwrite) {
   unsigned b[4];
   s_cfs_has_expect = uid_str && sscanf(uid_str, "%2x:%2x:%2x:%2x", &b[0], &b[1], &b[2], &b[3]) == 4;
   if (s_cfs_has_expect) for (int i = 0; i < 4; i++) s_cfs_expect[i] = (uint8_t)b[i];
   s_cfs_wait = wait;
+  s_cfs_overwrite = overwrite;
 }
 
-static bool writeCrealityJob(int spool_id, char *name, size_t name_len) {
-  name[0] = 0;
-  JsonDocument doc;
-  int code = backendGetSpoolJson(backendBaseUrl(), spool_id, doc);
-  if (code != 200 || doc.isNull()) {
-    char m[96];
-    snprintf(m, sizeof(m), "Spool %d not found on %s (HTTP %d)",
-             spool_id, backendName(), code);
-    finish("error", m, TW_ERR_BACKEND);
-    return false;
-  }
-  JsonObjectConst sp = doc.as<JsonObjectConst>();
+// ------------------------------------------------------------
+//  nfc_uid: the list of tags the scales wrote themselves
+// ------------------------------------------------------------
+// FilaStation's convention, now shared: a UID in the spool's extra field
+// nfc_uid is a tag one of the scales wrote, and both may write it again when
+// the spool changes. Original Creality tags and CFtag tags are not in it and
+// are left alone unless the user explicitly asks. Separators as FilaStation
+// reads them: comma, semicolon, slash, bar, newline; colons, dashes and
+// spaces inside a UID are ignored.
+static void nfcUidText(JsonObjectConst sp, char* out, size_t n) {
+  out[0] = '\0';
+  const char* s = sp["extra"]["nfc_uid"] | (const char*)nullptr;
+  if (!s) return;
+  size_t len = strlen(s);
+  if (len >= 2 && s[0] == '"' && s[len - 1] == '"') { s++; len -= 2; }
+  if (len >= n) len = n - 1;
+  memcpy(out, s, len);
+  out[len] = '\0';
+}
 
+static bool nfcUidListHas(const char* list, const char* hex8) {
+  char tok[24];
+  size_t t = 0;
+  for (const char* p = list; ; p++) {
+    const char c = *p;
+    if (c == '\0' || c == ',' || c == ';' || c == '/' || c == '|' || c == '\n') {
+      tok[t] = '\0';
+      if (t && strcmp(tok, hex8) == 0) return true;
+      t = 0;
+      if (c == '\0') return false;
+    } else if (isxdigit((unsigned char)c) && t < sizeof(tok) - 1) {
+      tok[t++] = (char)toupper((unsigned char)c);
+    }
+  }
+}
+
+static void hex8Of(const uint8_t uid[4], char out[9]) {
+  snprintf(out, 9, "%02X%02X%02X%02X", uid[0], uid[1], uid[2], uid[3]);
+}
+
+// Adds the UID to the spool's nfc_uid list. Spoolman only; the field is
+// created when the server does not have it yet (FilaStation creates it too).
+static void nfcUidAdd(int spool_id, JsonObjectConst sp, const uint8_t uid[4]) {
+  if (backendMode() != BACKEND_SPOOLMAN) return;
+  char hex[9];
+  hex8Of(uid, hex);
+  char list[160];
+  nfcUidText(sp, list, sizeof(list));
+  if (nfcUidListHas(list, hex)) return;
+  char value[180];
+  if (list[0]) snprintf(value, sizeof(value), "%s, %s", list, hex);
+  else         snprintf(value, sizeof(value), "%s", hex);
+  int code = spoolmanPatchExtraField(backendBaseUrl(), spool_id, "nfc_uid", value);
+  if (code < 200 || code >= 300) {
+    spoolmanCreateSpoolField(backendBaseUrl(), "nfc_uid");
+    code = spoolmanPatchExtraField(backendBaseUrl(), spool_id, "nfc_uid", value);
+  }
+  logSDf("CFS write: %s %s nfc_uid of spool %d (HTTP %d)", hex,
+         (code >= 200 && code < 300) ? "added to" : "could not be added to", spool_id, code);
+}
+
+// The Creality record the spool stands for right now.
+static bool crealityRecordFor(JsonObjectConst sp, int spool_id, char rec[41]) {
   CrealityRecordIn in;
   memset(&in, 0, sizeof(in));
   in.vendor    = sp["filament"]["vendor"]["name"] | "";
@@ -1389,9 +1442,48 @@ static bool writeCrealityJob(int spool_id, char *name, size_t name_len) {
     in.day   = now.tm_mday;
     in.year  = now.tm_year + 1900;
   }
+  return crealityBuildRecord(in, rec);
+}
+
+bool tagCrealityCheck(int spool_id, const char* uid_str, bool* own, bool* differs) {
+  *own = false;
+  *differs = false;
+  unsigned b[4];
+  if (!uid_str || sscanf(uid_str, "%2x:%2x:%2x:%2x", &b[0], &b[1], &b[2], &b[3]) != 4) return false;
+  const uint8_t uid[4] = {(uint8_t)b[0], (uint8_t)b[1], (uint8_t)b[2], (uint8_t)b[3]};
+  char on_tag[41];
+  if (!crealityLastRecord(uid, on_tag)) return false;
+  JsonDocument doc;
+  if (backendGetSpoolJson(backendBaseUrl(), spool_id, doc) != 200 || doc.isNull()) return false;
+  JsonObjectConst sp = doc.as<JsonObjectConst>();
+  char want[41];
+  if (!crealityRecordFor(sp, spool_id, want)) return false;
+  char list[160], hex[9];
+  nfcUidText(sp, list, sizeof(list));
+  hex8Of(uid, hex);
+  *own = nfcUidListHas(list, hex);
+  // Everything but the date: vendor, batch, filament, colour, length, serial.
+  *differs = memcmp(on_tag + 5, want + 5, 29) != 0;
+  logSDf("CFS check: %s spool %d, %s tag, tag %.29s, Spoolman %.29s%s", uid_str, spool_id,
+         *own ? "own" : "foreign", on_tag + 5, want + 5, *differs ? " - differs" : "");
+  return true;
+}
+
+static bool writeCrealityJob(int spool_id, char *name, size_t name_len) {
+  name[0] = 0;
+  JsonDocument doc;
+  int code = backendGetSpoolJson(backendBaseUrl(), spool_id, doc);
+  if (code != 200 || doc.isNull()) {
+    char m[96];
+    snprintf(m, sizeof(m), "Spool %d not found on %s (HTTP %d)",
+             spool_id, backendName(), code);
+    finish("error", m, TW_ERR_BACKEND);
+    return false;
+  }
+  JsonObjectConst sp = doc.as<JsonObjectConst>();
 
   char rec[41];
-  if (!crealityBuildRecord(in, rec)) {
+  if (!crealityRecordFor(sp, spool_id, rec)) {
     finish("error", "Could not build a Creality record for this spool", TW_ERR_WRITE);
     return false;
   }
@@ -1399,9 +1491,10 @@ static bool writeCrealityJob(int spool_id, char *name, size_t name_len) {
   uint8_t uid[4];
   const CrealityWriteResult r = crealityWriteTag(rec, uid,
                                                  s_cfs_has_expect ? s_cfs_expect : nullptr,
-                                                 s_cfs_wait);
+                                                 s_cfs_wait, s_cfs_overwrite);
   s_cfs_has_expect = false;
   s_cfs_wait = nullptr;
+  s_cfs_overwrite = false;
   cache_dirty = true;
   switch (r) {
     case CREALITY_WRITE_OK:
@@ -1422,7 +1515,9 @@ static bool writeCrealityJob(int spool_id, char *name, size_t name_len) {
       finish("error", "Write failed - keep the tag still on the reader", TW_ERR_WRITE);
       return false;
   }
-  const char *n = in.name;
+  // Ours from now on: both scales may write it again when the spool changes.
+  nfcUidAdd(spool_id, sp, uid);
+  const char *n = sp["filament"]["name"] | "";
   snprintf(name, name_len, "%s", n[0] ? n : "spool");
   return true;
 }

@@ -45,7 +45,16 @@ enum CrealityWriteResult {
 typedef void (*CrealityWaitFn)(int phase);
 CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4],
                                      const uint8_t* expect = nullptr,
-                                     CrealityWaitFn wait = nullptr);
+                                     CrealityWaitFn wait = nullptr,
+                                     bool overwrite = false);
+// overwrite: a tag that already opens with the Creality key gets the new
+// record too (keys unchanged). Only ever on an explicit answer: an own tag
+// whose spool changed, or an original tag on a refilled spool.
+
+// The 40 character plain record of the Creality tag read or written last,
+// false when that was another UID.
+bool crealityLastRecord(const uint8_t uid[4], char out[41]);
+void crealityRememberRecord(const uint8_t uid[4], const char rec40[40]);
 
 // Whether sector 1 of the card on the reader opens with the factory key
 // FFFFFFFFFFFF, and if so whether its data blocks hold nothing. A card that
