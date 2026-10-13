@@ -31,6 +31,29 @@ int spoolmanInventoryStamp(const char* base_url, int* out_count, int* out_witnes
 int spoolmanCreateSpool(const char* base_url, int filament_id, float initial_weight,
   float spool_weight, float remaining_weight, int* out_spool_id = nullptr, uint32_t timeout_ms = 8000);
 int spoolmanCreateSpoolField(const char* base_url, const char* field_name, uint32_t timeout_ms = 3000);
+
+// What a tag says about a filament, for spoolmanFindOrCreateFilament().
+struct SmNewFilament {
+  const char* vendor;       // "Bambu Lab", "Creality"
+  const char* material;     // "PLA"
+  const char* name;         // "PLA Matte", "Hyper PLA"
+  const char* color_hex6;   // "FF6A14", empty when the tag has no colour
+  float       weight;       // net filament on a full spool, g
+  float       spool_weight; // empty spool, g; 0 = leave it to Spoolman
+  float       diameter;     // mm
+  int         extruder_temp;// C, 0 = none
+};
+// Finds the filament a tag describes - same vendor, material, name and colour -
+// and creates it, with the vendor if that is missing too, when there is none.
+// Returns the HTTP code of the last request, 200/201 on success.
+int spoolmanFindOrCreateFilament(const char* base_url, const SmNewFilament& nf,
+                                 int* out_filament_id, bool* out_created,
+                                 uint32_t timeout_ms = 8000);
+// spoolmanCreateSpool() without a remaining weight: Spoolman then counts the
+// spool as full. For a scale that cannot weigh it (no load cell yet).
+int spoolmanCreateFullSpool(const char* base_url, int filament_id, float initial_weight,
+                            float spool_weight, int* out_spool_id = nullptr,
+                            uint32_t timeout_ms = 8000);
 // Writes one text extra field. `value` is the finished contents - for a list
 // field the merge already happened in cardUidsAppend() / cardUidsRemove(), and
 // for a single valued one it is the formatted UID. An empty value clears the

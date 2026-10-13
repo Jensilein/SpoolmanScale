@@ -243,6 +243,8 @@ static char newtag_rgba[SPOOL_COLOR_HEX_MAX] = "";   // RRGGBBAA
 static char newtag_brand[32]       = "";
 static char newtag_tray[36]        = "";   // same reason as newtag_brand
 static char newtag_color_name[32]  = "";   // resolved from the colour value
+static char newtag_name[48]        = "";   // filament name for Spoolman, "Hyper PLA"
+static bool newtag_creality        = false; // tag read as Creality CFS
 // Opening the popup costs an HTTP round trip for the colour name, so the
 // button only raises a flag and loop() does the work - same reason as
 // copy_confirm_pending above.
@@ -3703,10 +3705,14 @@ void doCreateSpoolFromTag() {
   if (!wifi_ok) return;
 
   int new_id = 0;
+  // A Creality spool is not a Bambu one: its empty weight is unknown here,
+  // so Spoolman gets none rather than Bambu's 250 g. Without a load cell the
+  // spool is created full - a net reading of 0 g would create it empty.
   int code = serverReachNote(backendCreateSpoolFromTag(newtag_material, newtag_subtype, newtag_brand,
                                        newtag_rgba, newtag_color_name, newtag_label_weight,
-                                       BAMBU_CORE_WEIGHT_G, newTagNetto(),
-                                       g_tag.temp_min, g_tag.temp_max, &new_id, 8000), true);
+                                       newtag_creality ? 0 : BAMBU_CORE_WEIGHT_G, newTagNetto(),
+                                       g_tag.temp_min, g_tag.temp_max, &new_id, 8000,
+                                       newtag_name, scale_ready), true);
   if ((code == 200 || code == 201) && new_id > 0) {
     Serial.printf("New spool from tag: new ID=%d\n", new_id);
     logSDf("New spool from tag: mat=%s sub=%s brand=%s col=%s rgba=%s label=%d new_spool_id=%d",
@@ -3739,6 +3745,17 @@ void showNewFromTagPopup() {
   memcpy(newtag_material, g_tag.material, head);
   newtag_material[head] = '\0';
 
+  // Creality: the tag's own product name ("Hyper PLA") names the filament;
+  // there is no subtype to split off. Bambu: Spoolman builds the name from
+  // material and subtype, as BamBuddy does.
+  newtag_creality = (strcmp(g_tag.decoder, "Creality") == 0);
+  newtag_name[0] = '\0';
+  if (newtag_creality) {
+    newtag_subtype[0] = '\0';
+    if (g_tag.detailed_filament[0] && strncmp(g_tag.detailed_filament, "Creality ID", 11) != 0) {
+      snprintf(newtag_name, sizeof(newtag_name), "%s", g_tag.detailed_filament);
+    }
+  }
   strncpy(newtag_brand, g_tag.vendor[0] ? g_tag.vendor : BAMBU_VENDOR_NAME,
           sizeof(newtag_brand)-1);
   newtag_brand[sizeof(newtag_brand)-1] = '\0';

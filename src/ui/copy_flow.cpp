@@ -569,11 +569,12 @@ void showCopyEntryPopup() {
   lv_obj_set_width(lbl_ctx, 450);
   lv_obj_align(lbl_ctx, LV_ALIGN_TOP_MID, 0, 60);
 
-  // Creating from the tag needs a backend that can do it and a Bambu tag to
-  // read it from - an NTAG carries no material, and material is the one field
-  // BamBuddy insists on.
+  // Creating from the tag needs a backend that can do it and a Bambu or
+  // Creality tag to read it from - an NTAG carries no material, and material
+  // is the one field both backends insist on.
   const bool offer_from_tag = backendCanCreateFromTag() &&
-                              strlen(g_tag.tray_uuid) == 32 &&
+                              (strlen(g_tag.tray_uuid) == 32 ||
+                               strcmp(g_tag.decoder, "Creality") == 0) &&
                               g_tag.material[0] != '\0';
 
   // Button layout: 3 buttons + cancel, ID= >100 recommended | List= <100

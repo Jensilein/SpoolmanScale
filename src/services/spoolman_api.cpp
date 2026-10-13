@@ -8,6 +8,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
+#include <ctype.h>
 #include <WiFiClient.h>
 #include <string.h>
 
@@ -449,6 +450,141 @@ int spoolmanCreateSpool(const char* base_url, int filament_id, float initial_wei
     }
   }
   http.end();
+  return code;
+}
+
+// Query values here are names like "Bambu Lab" or "PLA+": everything that is
+// not unreserved goes out percent-encoded.
+static String urlEncodeQ(const char* in) {
+  static const char* hex = "0123456789ABCDEF";
+  String out;
+  for (const unsigned char* p = (const unsigned char*)in; p && *p; p++) {
+    const unsigned char c = *p;
+    if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+      out += (char)c;
+    } else {
+      out += '%'; out += hex[c >> 4]; out += hex[c & 15];
+    }
+  }
+  return out;
+}
+
+// Spoolman wants a density for every filament. Typical values, by the start of
+// the material name; the user can correct it in Spoolman.
+static float densityFor(const char* material) {
+  struct D { const char* prefix; float d; };
+  static const D table[] = {
+    {"PETG-CF", 1.30f}, {"PLA-CF", 1.30f}, {"PA-CF", 1.20f}, {"PA6-CF", 1.20f},
+    {"PAHT", 1.20f}, {"PETG", 1.27f}, {"PET", 1.38f}, {"PLA", 1.24f},
+    {"ABS", 1.04f}, {"ASA", 1.07f}, {"TPU", 1.21f}, {"PC", 1.20f},
+    {"PA", 1.14f}, {"PVA", 1.23f}, {"BVOH", 1.14f}, {"HIPS", 1.04f},
+    {"PPS", 1.35f}, {"PP", 0.90f},
+  };
+  for (const D& e : table) {
+    if (strncasecmp(material, e.prefix, strlen(e.prefix)) == 0) return e.d;
+  }
+  return 1.24f;
+}
+
+static bool sameHex(const char* a, const char* b) {
+  if (a && *a == '#') a++;
+  if (b && *b == '#') b++;
+  if (!a || !b) return false;
+  if (!*a && !*b) return true;
+  return strncasecmp(a, b, 6) == 0 && strlen(a) >= 6 && strlen(b) >= 6;
+}
+
+int spoolmanFindOrCreateFilament(const char* base_url, const SmNewFilament& nf,
+                                 int* out_filament_id, bool* out_created,
+                                 uint32_t timeout_ms) {
+  if (out_filament_id) *out_filament_id = 0;
+  if (out_created) *out_created = false;
+  if (!hasBaseUrl(base_url) || !nf.vendor || !*nf.vendor || !nf.material || !*nf.material) return -1;
+  const String base(base_url);
+  const char* name = (nf.name && *nf.name) ? nf.name : nf.material;
+  const char* hex  = nf.color_hex6 ? nf.color_hex6 : "";
+
+  // 1. The vendor. The name filter matches parts of names, so the answer is
+  //    checked for the exact one.
+  int vendor_id = 0;
+  {
+    JsonDocument doc;
+    int code = getJson(base + "/api/v1/vendor?name=" + urlEncodeQ(nf.vendor), doc, timeout_ms,
+                       nullptr, nullptr);
+    if (code != 200) return code;
+    for (JsonObject v : doc.as<JsonArray>()) {
+      const char* vn = v["name"] | "";
+      if (strcasecmp(vn, nf.vendor) == 0) { vendor_id = v["id"] | 0; break; }
+    }
+  }
+  if (vendor_id <= 0) {
+    JsonDocument req, resp;
+    req["name"] = nf.vendor;
+    String body; serializeJson(req, body);
+    int code = postJsonDoc(base + "/api/v1/vendor", body, resp, timeout_ms, nullptr);
+    if (code != 200 && code != 201) {
+      logSDf("Spoolman: vendor '%s' not created (HTTP %d)", nf.vendor, code);
+      return code;
+    }
+    vendor_id = resp["id"] | 0;
+    logSDf("Spoolman: vendor '%s' created, id %d", nf.vendor, vendor_id);
+    if (vendor_id <= 0) return -2;
+  }
+
+  // 2. The filament: same vendor and material, same name and colour.
+  {
+    JsonDocument doc;
+    String url = base + "/api/v1/filament?vendor.id=" + String(vendor_id) +
+                 "&material=" + urlEncodeQ(nf.material);
+    int code = getJson(url, doc, timeout_ms, nullptr, nullptr);
+    if (code != 200) return code;
+    for (JsonObject f : doc.as<JsonArray>()) {
+      const char* fname = f["name"] | "";
+      const char* fhex  = f["color_hex"] | "";
+      if (strcasecmp(fname, name) == 0 && sameHex(fhex, hex)) {
+        if (out_filament_id) *out_filament_id = f["id"] | 0;
+        logSDf("Spoolman: filament '%s' #%s of '%s' found, id %d", name, *hex ? hex : "-",
+               nf.vendor, (int)(f["id"] | 0));
+        return 200;
+      }
+    }
+  }
+
+  // 3. Not there yet: create it.
+  JsonDocument req, resp;
+  req["name"]      = name;
+  req["vendor_id"] = vendor_id;
+  req["material"]  = nf.material;
+  req["density"]   = densityFor(nf.material);
+  req["diameter"]  = nf.diameter > 0 ? nf.diameter : 1.75f;
+  if (nf.weight > 0)        req["weight"] = (int)(nf.weight + 0.5f);
+  if (nf.spool_weight > 0)  req["spool_weight"] = (int)(nf.spool_weight + 0.5f);
+  if (*hex)                 req["color_hex"] = hex;
+  if (nf.extruder_temp > 0) req["settings_extruder_temp"] = nf.extruder_temp;
+  String body; serializeJson(req, body);
+  int code = postJsonDoc(base + "/api/v1/filament", body, resp, timeout_ms, nullptr);
+  if (code != 200 && code != 201) {
+    logSDf("Spoolman: filament '%s' not created (HTTP %d)", name, code);
+    return code;
+  }
+  if (out_filament_id) *out_filament_id = resp["id"] | 0;
+  if (out_created) *out_created = true;
+  logSDf("Spoolman: filament '%s' #%s of '%s' created, id %d", name, *hex ? hex : "-",
+         nf.vendor, (int)(resp["id"] | 0));
+  return code;
+}
+
+int spoolmanCreateFullSpool(const char* base_url, int filament_id, float initial_weight,
+                            float spool_weight, int* out_spool_id, uint32_t timeout_ms) {
+  if (out_spool_id) *out_spool_id = 0;
+  if (!hasBaseUrl(base_url) || filament_id <= 0) return -1;
+  JsonDocument req, resp;
+  req["filament_id"] = filament_id;
+  if (initial_weight > 0) req["initial_weight"] = (int)(initial_weight + 0.5f);
+  if (spool_weight > 0)   req["spool_weight"]   = (int)(spool_weight + 0.5f);
+  String body; serializeJson(req, body);
+  int code = postJsonDoc(String(base_url) + "/api/v1/spool", body, resp, timeout_ms, nullptr);
+  if ((code == 200 || code == 201) && out_spool_id) *out_spool_id = resp["id"] | 0;
   return code;
 }
 

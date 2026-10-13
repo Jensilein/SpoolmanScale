@@ -260,14 +260,19 @@ int  backendCreateSpool(const char* base_url, int template_spool_id, int filamen
        float initial_weight, float spool_weight, float remaining_weight,
        int* out_spool_id = nullptr, uint32_t timeout_ms = 8000);
 
-// Creates a spool from what a Bambu tag carries, for the case where no
-// template fits. BamBuddy only - Spoolman and FilaMan want a filament_id, and
-// a tag cannot supply one. remaining_weight is the net reading of the scale.
+// Creates a spool from what a Bambu or Creality tag carries, for the case
+// where no template fits. BamBuddy and Spoolman; on Spoolman the filament (and
+// its vendor) is looked up by what the tag says and created when missing.
+// FilaMan wants a filament_id and has no such path. remaining_weight is the
+// net reading of the scale; weighed=false (no load cell) creates a full spool.
+// filament_name names the filament on Spoolman ("Hyper PLA"); empty means
+// material and subtype.
 int  backendCreateSpoolFromTag(const char* material, const char* subtype,
        const char* brand, const char* rgba, const char* color_name,
        int label_weight, int core_weight,
        float remaining_weight, int nozzle_temp_min, int nozzle_temp_max,
-       int* out_spool_id = nullptr, uint32_t timeout_ms = 8000);
+       int* out_spool_id = nullptr, uint32_t timeout_ms = 8000,
+       const char* filament_name = nullptr, bool weighed = true);
 
 // Turns the colour value on a tag into a name the backend knows. Empty output
 // means "no name for this colour", which is not an error.

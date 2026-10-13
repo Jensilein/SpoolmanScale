@@ -735,7 +735,7 @@ int backendCreateSpool(const char* base_url, int template_spool_id, int filament
 }
 
 bool backendCanCreateFromTag() {
-  return backendMode() == BACKEND_BAMBUDDY;
+  return backendMode() == BACKEND_BAMBUDDY || backendMode() == BACKEND_SPOOLMAN;
 }
 
 void backendLookupColorName(const char* hex6, const char* material,
@@ -753,9 +753,45 @@ int backendCreateSpoolFromTag(const char* material, const char* subtype,
                               const char* color_name,
                               int label_weight, int core_weight, float remaining_weight,
                               int nozzle_temp_min, int nozzle_temp_max,
-                              int* out_spool_id, uint32_t timeout_ms) {
+                              int* out_spool_id, uint32_t timeout_ms,
+                              const char* filament_name, bool weighed) {
   HttpStallTime stall(__func__);   // the loop stands still for this call
   if (out_spool_id) *out_spool_id = 0;
+  if (backendMode() == BACKEND_SPOOLMAN) {
+    // Spoolman keeps spools under filaments under vendors. The tag names all
+    // three, so the filament is found by them or created, and the spool hangs
+    // off it like any other.
+    char name[64];
+    if (filament_name && *filament_name) {
+      snprintf(name, sizeof(name), "%s", filament_name);
+    } else if (subtype && *subtype) {
+      snprintf(name, sizeof(name), "%s %s", material, subtype);
+    } else {
+      snprintf(name, sizeof(name), "%s", material ? material : "");
+    }
+    char hex6[7] = "";
+    if (rgba && strlen(rgba) >= 6) { memcpy(hex6, rgba, 6); hex6[6] = '\0'; }
+    SmNewFilament nf;
+    nf.vendor        = brand;
+    nf.material      = material;
+    nf.name          = name;
+    nf.color_hex6    = hex6;
+    nf.weight        = (float)label_weight;
+    nf.spool_weight  = (float)core_weight;
+    nf.diameter      = 1.75f;
+    nf.extruder_temp = (nozzle_temp_min > 0 && nozzle_temp_max >= nozzle_temp_min)
+                         ? (nozzle_temp_min + nozzle_temp_max) / 2 : nozzle_temp_max;
+    int filament_id = 0;
+    bool created = false;
+    int code = spoolmanFindOrCreateFilament(backendBaseUrl(), nf, &filament_id, &created, timeout_ms);
+    if ((code != 200 && code != 201) || filament_id <= 0) return code > 0 ? code : -1;
+    if (!weighed) {
+      return spoolmanCreateFullSpool(backendBaseUrl(), filament_id, (float)label_weight,
+                                     (float)core_weight, out_spool_id, timeout_ms);
+    }
+    return spoolmanCreateSpool(backendBaseUrl(), filament_id, (float)label_weight,
+                               (float)core_weight, remaining_weight, out_spool_id, timeout_ms);
+  }
   if (backendMode() != BACKEND_BAMBUDDY) return notSupported("CreateSpoolFromTag");
 
   BbNewSpool ns;
