@@ -257,6 +257,35 @@ static CrealityWriteResult verifyWritten(const uint8_t* uid, const char* uid_str
   return CREALITY_WRITE_OK;
 }
 
+// Writes blocks 4..6 of a tag that already opens with the Creality key and
+// whose sector 1 was just authenticated with key A (by the read). The keys
+// stay as they are. Some writers lock the data blocks to key B, which is the
+// same key on Creality's own tags, so that is tried once before giving up.
+static CrealityWriteResult overwriteRecord(const uint8_t* uid_in, const char* uid_str,
+                                           uint8_t key[6], const uint8_t cipher[48],
+                                           const char rec40[40], CrealityWaitFn wait,
+                                           bool had_record) {
+  uint8_t uid[4];
+  memcpy(uid, uid_in, 4);
+  bool silent = false;
+  logSDf("CFS write: %s opens with the Creality key%s - overwriting as asked",
+         uid_str, had_record ? " and holds a record" : "");
+  bool wrote = true;
+  for (int b = 0; b < 3 && wrote; b++) wrote = nfcWriteMifareBlock(4 + b, cipher + b * 16);
+  if (!wrote) {
+    logSDf("CFS write: %s refused the write with key A, trying key B", uid_str);
+    wrote = wakeCard(uid, uid_str, &silent) && !silent &&
+            nfcAuthMifareSector(1, key, uid, NFC_KEY_B);
+    for (int b = 0; b < 3 && wrote; b++) wrote = nfcWriteMifareBlock(4 + b, cipher + b * 16);
+  }
+  if (!wrote) {
+    logSDf("CFS write: %s refused the overwrite", uid_str);
+    if (!silent) wakeCard(uid, uid_str, &silent);
+    return CREALITY_WRITE_FAILED;
+  }
+  return verifyWritten(uid, uid_str, key, cipher, rec40, wait, silent);
+}
+
 CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4],
                                      const uint8_t* expect, CrealityWaitFn wait,
                                      bool overwrite) {
@@ -294,6 +323,29 @@ CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4],
 
   bool silent = false;
 
+  // 0. Overwriting a Creality tag: its own key first, on the card as freshly
+  //    selected as it gets. Asked the factory key first, a weakly placed tag
+  //    refused it and then its Creality key as well (13.10.2026), and the
+  //    write gave up as 'not blank'. A refusal here gets the spool put back,
+  //    twice at most; a tag that opens with neither (formatted by CFtag, say)
+  //    goes on to the factory key below.
+  if (overwrite) {
+    uint8_t blocks[4][16];
+    bool ok = nfcReadMifareSector(1, key, uid, blocks, NFC_KEY_A);
+    for (int again = 0; !ok && again < 2 && wait; again++) {
+      logSDf("CFS write: %s did not open with the Creality key - asking for it again", uid_str);
+      uint8_t got[NFC_UID_MAX];
+      uint8_t got_len = 0;
+      if (!waitForCard(got, &got_len, uid, wait)) break;
+      ok = nfcReadMifareSector(1, key, uid, blocks, NFC_KEY_A);
+    }
+    if (ok) {
+      CrealityTag t;
+      return overwriteRecord(uid, uid_str, key, cipher, rec40, wait, crealityDecode(blocks, &t));
+    }
+    if (!wakeCard(uid, uid_str, &silent) || silent) return CREALITY_WRITE_NO_TAG;
+  }
+
   // 1. Is sector 1 still on the factory key? A refused key halts the card,
   //    so every "no" is followed by a wake before the next question.
   //    A tag this session already found blank is not given up on after one
@@ -321,27 +373,7 @@ CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4],
         if (rec) tagFamilySet(uid, TAG_FAMILY_CREALITY);
         return CREALITY_WRITE_IS_CREALITY;
       }
-      // Asked for: a tag of ours whose spool changed, or an original one on
-      // a spool that has been refilled. The card is authenticated with key A
-      // from the read; the keys stay as they are, only blocks 4..6 change.
-      logSDf("CFS write: %s opens with the Creality key%s - overwriting as asked",
-             uid_str, rec ? " and holds a record" : "");
-      bool wrote = true;
-      for (int b = 0; b < 3 && wrote; b++) wrote = nfcWriteMifareBlock(4 + b, cipher + b * 16);
-      if (!wrote) {
-        // Some writers lock the data blocks to key B. Same key on Creality's
-        // own tags, so it is tried once before giving up.
-        logSDf("CFS write: %s refused the write with key A, trying key B", uid_str);
-        wrote = wakeCard(uid, uid_str, &silent) && !silent &&
-                nfcAuthMifareSector(1, key, uid, NFC_KEY_B);
-        for (int b = 0; b < 3 && wrote; b++) wrote = nfcWriteMifareBlock(4 + b, cipher + b * 16);
-      }
-      if (!wrote) {
-        logSDf("CFS write: %s refused the overwrite", uid_str);
-        if (!silent) wakeCard(uid, uid_str, &silent);
-        return CREALITY_WRITE_FAILED;
-      }
-      return verifyWritten(uid, uid_str, key, cipher, rec40, wait, silent);
+      return overwriteRecord(uid, uid_str, key, cipher, rec40, wait, rec);
     }
     logSDf("CFS write: %s refuses the factory key - not a blank tag, not written", uid_str);
     if (!silent) wakeCard(uid, uid_str, &silent);
