@@ -1921,6 +1921,16 @@ void appLoop() {
           // One that has been written since (FilaStation, CFTag) refuses it
           // and goes through the family choice as an unknown tag.
           int factory = CREALITY_FACTORY_REFUSED;
+          // Refused the Creality key last time: the factory key goes first now,
+          // on the freshly selected card, ahead of the Bambu probe. A blank
+          // sticker that sits weakly on the reader may not come back from the
+          // refused Creality key at all (13.10.2026, 6E:C6:DB:4F: no answer to
+          // any wake), so asking it in second place found nothing. A Bambu tag
+          // pays one refusal on its first placement; after that its family is
+          // stored and it goes straight to the Bambu scan.
+          if (g_creality_tags && family == TAG_FAMILY_NOT_CREALITY) {
+            factory = crealityProbeFactory(uid, uid_str);
+          }
           if (g_creality_tags && family == TAG_FAMILY_BLANK) {
             factory = crealityProbeFactory(uid, uid_str);
             if (factory != CREALITY_FACTORY_BLANK) {

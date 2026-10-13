@@ -297,7 +297,8 @@ CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4]) {
 int crealityProbeFactory(const uint8_t uid[4], const char* uid_str) {
   bool silent = false;
   if (!nfcAuthMifareSector(1, FACTORY_KEY, uid, NFC_KEY_A)) {
-    wakeCard(uid, uid_str, &silent);   // for whichever probe comes next
+    int w = wakeCard(uid, uid_str, &silent);   // for whichever probe comes next
+    logSDf("NFC: %s refuses the factory key (woke=%d)", uid_str, w);
     return CREALITY_FACTORY_REFUSED;
   }
   // Opening with the factory key is not yet "blank": the data blocks have to
