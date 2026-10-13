@@ -182,7 +182,16 @@ static bool waitForCard(uint8_t uid[NFC_UID_MAX], uint8_t* uid_len,
     *uid_len = 0;
     if (nfcReadPassiveTarget(uid, uid_len, 150) && *uid_len == 4 &&
         (!expect || memcmp(uid, expect, 4) == 0)) {
-      return true;
+      // Seen while the spool is still being put down, at the edge of the
+      // field, the card answers a poll and then refuses its own key
+      // (13.10.2026). Let it settle and select it once more.
+      const unsigned long t1 = millis();
+      while (millis() - t1 < 700) { wait(1); delay(20); }
+      *uid_len = 0;
+      if (nfcReadPassiveTarget(uid, uid_len, 300) && *uid_len == 4 &&
+          (!expect || memcmp(uid, expect, 4) == 0)) {
+        return true;
+      }
     }
     wait(1);
     delay(20);
@@ -228,7 +237,19 @@ CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4],
 
   // 1. Is sector 1 still on the factory key? A refused key halts the card,
   //    so every "no" is followed by a wake before the next question.
-  if (!nfcAuthMifareSector(1, FACTORY_KEY, uid, NFC_KEY_A)) {
+  //    A tag this session already found blank is not given up on after one
+  //    refusal: a weakly placed sticker refuses even the right key now and
+  //    then (13.10.2026). It is asked to be put back, twice at most.
+  bool opened = nfcAuthMifareSector(1, FACTORY_KEY, uid, NFC_KEY_A);
+  for (int again = 0; !opened && again < 2 && wait &&
+                      tagFamilyGet(uid) == TAG_FAMILY_BLANK; again++) {
+    logSDf("CFS write: %s refused the factory key, but was blank - asking for it again", uid_str);
+    uint8_t got[NFC_UID_MAX];
+    uint8_t got_len = 0;
+    if (!waitForCard(got, &got_len, uid, wait)) break;
+    opened = nfcAuthMifareSector(1, FACTORY_KEY, uid, NFC_KEY_A);
+  }
+  if (!opened) {
     int woke = wakeCard(uid, uid_str, &silent);
     uint8_t blocks[4][16];
     if (woke && !silent && nfcReadMifareSector(1, key, uid, blocks, NFC_KEY_A)) {
