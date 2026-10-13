@@ -2320,7 +2320,7 @@ const char* const STRINGS[][3] = {
     "Turn the spool over and place the second tag",
     "Retournez la bobine et posez le second tag" },  // STR_TAG2_PROMPT
   { "Schließt in %d s",      "Closes in %d s",    "Se ferme dans %d s" },  // STR_TAG2_CLOSES_IN
-  { "Fertig",                "Done",              "Terminer" },  // STR_TAG2_BTN_DONE
+  { "Überspringen",          "Skip",              "Passer" },  // STR_TAG2_BTN_DONE
   { "Zweites Tag verknüpft", "Second tag linked", "Second tag lié" },  // STR_TAG2_LINKED
 
   // ── A device built without a load cell ──

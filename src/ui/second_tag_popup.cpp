@@ -211,6 +211,8 @@ void showSecondTagPopup(int spool_id, const char* first_uid) {
   lv_obj_clear_flag(btn_done, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_event_cb(btn_done, [](lv_event_t *e) {
     // No HTTP and no delete in here, both happen one loop pass later.
+    // Logged: on 13.10.2026 the question vanished with no line saying why.
+    logSD("BTN: Tag2 -> Skip");
     s_close_pending = true;
     setState(T2_CANCELLED);
   }, LV_EVENT_CLICKED, NULL);
