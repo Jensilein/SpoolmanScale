@@ -180,6 +180,9 @@ static bool loc_kept = false;
 // moment the weight changes or the tag answers again. While set, the weight
 // reference stays frozen at what the pad carried when the tag was last read.
 static bool tag_kept_by_weight = false;
+// What the pad carried at the last poll that read the tag. A tag that stops
+// answering while the weight falls well below this was lifted, not lost.
+static float weight_at_last_read = 0.0f;
 
 // Did the spool actually leave, or did the reader merely lose the tag?
 //
@@ -1828,6 +1831,7 @@ void appLoop() {
       if (found) {
         last_uid_len = uidLen;
         tag_kept_by_weight = false;
+        weight_at_last_read = scale_weight_g;
         // Only a genuinely long absence earns a fresh set of retries. Without
         // this a tag that keeps failing to authenticate would be re-scanned
         // indefinitely, five seconds per attempt.
@@ -2289,7 +2293,11 @@ void appLoop() {
         // tag sits off-centre on the flange, and a spool turned so the tag is
         // out of the reader's reach (13.10.2026) does not come back from any
         // wake. Beyond that the usual grace period decides.
-        if (!held && tag_present && (creality_decoded || blank_mifare) && last_uid_len == 4 &&
+        // Lifted, not lost: the weight fell well below what the pad carried
+        // at the last read. No wakes then, so the removal comes at once.
+        const bool lifted = g_scale_fitted && weight_at_last_read >= LOC_WEIGHT_MIN_G &&
+                            scale_weight_g < weight_at_last_read - LOC_WEIGHT_TOLERANCE_G;
+        if (!held && !lifted && tag_present && (creality_decoded || blank_mifare) && last_uid_len == 4 &&
             millis() - last_tag_seen_ms < 3000 &&
             millis() - last_presence_recover_ms >= 400) {
           last_presence_recover_ms = millis();
