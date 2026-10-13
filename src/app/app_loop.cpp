@@ -1770,6 +1770,10 @@ void appLoop() {
               tagFamilySet(uid, TAG_FAMILY_NOT_CREALITY);
             }
             scanTag(uid, uidLen);
+            // Remembered as soon as any sector read, not only once the scan
+            // has settled on a later poll: on 13.10.2026 a Bambu spool read
+            // 6/48 blocks and dropped out before that poll ever came.
+            if (countBambuDataBlocksRead(g_tag) > 0) tagFamilySet(uid, TAG_FAMILY_BAMBU);
           }
           // Opt-in, off by default, and then none of this touches the reader.
           // Once per placement, right after the first Bambu probe came back
@@ -1823,6 +1827,7 @@ void appLoop() {
             }
           } else {
             scanTag(uid, uidLen);
+            if (countBambuDataBlocksRead(g_tag) > 0) tagFamilySet(uid, TAG_FAMILY_BAMBU);
           }
         } else {
           // The "Tag placed" line waits until the scan has settled, so it
