@@ -46,6 +46,17 @@ static uint8_t  s_write_fmt     = 0;
 // spool back offers it again.
 static char     s_cfs_asked_uid[24] = "";
 
+// While a CFS write waits for a tag that stopped answering: say so on the
+// busy card, and keep the screen drawing. Runs inside tagWriteTick().
+static void cfsWaitNotice(int phase) {
+  if (phase == 0) tagBusyAskReplace();
+  lv_timer_handler();
+}
+
+static void armCfsTarget() {
+  if (s_write_fmt == TAG_FMT_CREALITY) tagWriteCfsTarget(s_cfs_asked_uid, cfsWaitNotice);
+}
+
 bool tagCfsAskedFor(const char *uid) {
   return uid && uid[0] && strcmp(s_cfs_asked_uid, uid) == 0;
 }
@@ -455,7 +466,7 @@ void handleTagWritePopupDeferredActions() {
   // all from the device.
   const bool queued = (s_mode == ASK_ERASE)
                         ? tagWriteRequest(0, TAG_FMT_ERASE, false)
-                        : tagWriteRequest(s_spool_id, (TagFormat)s_write_fmt, false);
+                        : (armCfsTarget(), tagWriteRequest(s_spool_id, (TagFormat)s_write_fmt, false));
   if (queued) {
     s_watching = true;
     // From here to the result the loop is busy with the tag and the screen

@@ -1346,6 +1346,17 @@ static bool writeSpoolRecord(int spool_id, TagFormat fmt,
 // A Creality CFS record onto the blank MIFARE tag on the reader. Its own path:
 // selectWritableTag() turns every 4 byte UID away, and none of the NTAG page
 // code applies. Reports through finish() either way.
+static bool     s_cfs_has_expect = false;
+static uint8_t  s_cfs_expect[4];
+static void   (*s_cfs_wait)(int) = nullptr;
+
+void tagWriteCfsTarget(const char* uid_str, void (*wait)(int phase)) {
+  unsigned b[4];
+  s_cfs_has_expect = uid_str && sscanf(uid_str, "%2x:%2x:%2x:%2x", &b[0], &b[1], &b[2], &b[3]) == 4;
+  if (s_cfs_has_expect) for (int i = 0; i < 4; i++) s_cfs_expect[i] = (uint8_t)b[i];
+  s_cfs_wait = wait;
+}
+
 static bool writeCrealityJob(int spool_id, char *name, size_t name_len) {
   name[0] = 0;
   JsonDocument doc;
@@ -1386,7 +1397,11 @@ static bool writeCrealityJob(int spool_id, char *name, size_t name_len) {
   }
 
   uint8_t uid[4];
-  const CrealityWriteResult r = crealityWriteTag(rec, uid);
+  const CrealityWriteResult r = crealityWriteTag(rec, uid,
+                                                 s_cfs_has_expect ? s_cfs_expect : nullptr,
+                                                 s_cfs_wait);
+  s_cfs_has_expect = false;
+  s_cfs_wait = nullptr;
   cache_dirty = true;
   switch (r) {
     case CREALITY_WRITE_OK:

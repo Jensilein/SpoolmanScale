@@ -61,6 +61,12 @@ enum TagWriteResult : uint8_t {
 typedef void (*TagWriteProgressFn)(uint16_t done, uint16_t total);
 void tagWriteSetProgress(TagWriteProgressFn fn);
 
+// For the next Creality CFS write only: the UID it is meant for ("6E:C6:DB:4F",
+// empty for any), and a callback while it waits for a tag that does not
+// answer to be put back - phase 0 once, then 1 about every 150 ms. Both are
+// used by one write and then forgotten.
+void tagWriteCfsTarget(const char* uid_str, void (*wait)(int phase));
+
 // Parks a request. The write itself runs in tagWriteTick(), because the NFC
 // bus belongs to the loop task and the HTTP handler is not on it.
 // link also writes the tag's UID onto the spool record, so presenting it

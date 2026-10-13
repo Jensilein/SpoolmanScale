@@ -171,18 +171,45 @@ static bool blockIsBlank(const uint8_t b[16]) {
   return true;
 }
 
-CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4]) {
+// Polls for the card the write is meant for. Plain polls only: a card that
+// was just put down answers them, and nothing else touches it meanwhile.
+static bool waitForCard(uint8_t uid[NFC_UID_MAX], uint8_t* uid_len,
+                        const uint8_t* expect, CrealityWaitFn wait) {
+  if (!wait) return false;
+  wait(0);
+  const unsigned long t0 = millis();
+  while (millis() - t0 < 20000) {
+    *uid_len = 0;
+    if (nfcReadPassiveTarget(uid, uid_len, 150) && *uid_len == 4 &&
+        (!expect || memcmp(uid, expect, 4) == 0)) {
+      return true;
+    }
+    wait(1);
+    delay(20);
+  }
+  return false;
+}
+
+CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4],
+                                     const uint8_t* expect, CrealityWaitFn wait) {
   uint8_t uid[NFC_UID_MAX] = {0};
   uint8_t uid_len = 0;
-  bool found = nfcReadPassiveTarget(uid, &uid_len, 600);
+  auto right_card = [&]() {
+    return uid_len == 4 && (!expect || memcmp(uid, expect, 4) == 0);
+  };
+  bool found = nfcReadPassiveTarget(uid, &uid_len, 600) && right_card();
   // A card that refused a key earlier may not answer a plain poll; release
-  // it, then reset the field once, before giving up.
-  if (!found) { nfcInRelease(); found = nfcReadPassiveTarget(uid, &uid_len, 300); }
+  // it, then reset the field once, then ask for the spool to be put back.
+  if (!found) { nfcInRelease(); found = nfcReadPassiveTarget(uid, &uid_len, 300) && right_card(); }
   if (!found && (nfcRfFieldCycle() & NFC_RF_CHIP_OK)) {
     delay(30);
-    found = nfcReadPassiveTarget(uid, &uid_len, 300);
+    found = nfcReadPassiveTarget(uid, &uid_len, 300) && right_card();
   }
-  if (!found || uid_len != 4) {
+  if (!found) {
+    logSD("CFS write: tag does not answer, waiting for the spool to be put back");
+    found = waitForCard(uid, &uid_len, expect, wait);
+  }
+  if (!found) {
     logSD("CFS write: no 4 byte tag on the reader");
     return CREALITY_WRITE_NO_TAG;
   }
@@ -274,8 +301,16 @@ CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4]) {
     logSDf("CFS write: %s sector 2 not on the factory key, left as it is", uid_str);
   }
 
-  // 4. Read it back the way the scale and the printer will.
-  int woke = wakeCard(uid, uid_str, &silent);
+  // 4. Read it back the way the scale and the printer will. A card that has
+  //    gone quiet after the write is read once it has been put back.
+  int woke = silent ? 0 : wakeCard(uid, uid_str, &silent);
+  if (!woke) {
+    uint8_t again[NFC_UID_MAX];
+    uint8_t again_len = 0;
+    silent = false;
+    logSDf("CFS write: %s written, waiting for it to answer for the check", uid_str);
+    if (waitForCard(again, &again_len, uid, wait)) woke = 1;
+  }
   uint8_t back[4][16];
   bool verified = false;
   if (woke && !silent && nfcReadMifareSector(1, key, uid, back, NFC_KEY_A)) {

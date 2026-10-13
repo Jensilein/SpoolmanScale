@@ -3202,6 +3202,9 @@ const char* const STRINGS[][3] = {
   { "Der leere Tag bekommt die Daten dieser Spule, damit das Creality CFS sie erkennt.",
     "The blank tag gets this spool's data, so the Creality CFS recognises it.",
     "Le tag vierge reçoit les données de cette bobine, pour que le CFS Creality la reconnaisse." },  // STR_TW_CFS_ASK_HINT
+  { "Der Tag antwortet nicht. Spule kurz anheben und wieder genauso hinstellen.",
+    "The tag does not answer. Lift the spool briefly and put it back the same way.",
+    "Le tag ne répond pas. Soulevez brièvement la bobine et reposez-la de la même façon." },  // STR_TW_CFS_REPLACE
 };
 
 StringID tagWriteResultString(uint8_t code) {

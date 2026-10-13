@@ -36,7 +36,16 @@ enum CrealityWriteResult {
 // Sector 1 gets the encrypted record and the UID's derived key as key A and
 // key B; sector 2 gets spaces, as Creality's own tags carry. The write is
 // read back with the new key before it counts. uid_out receives the UID.
-CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4]);
+//
+// A tag that does not answer - a weakly placed one often stops answering after
+// the first refused key - is waited for: wait(0) is called once, then wait(1)
+// about every 150 ms for up to 20 s, while the user lifts the spool and puts
+// it back. The callback keeps the screen alive and says what to do; nullptr
+// means no waiting. expect, when not nullptr, is the only UID accepted.
+typedef void (*CrealityWaitFn)(int phase);
+CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4],
+                                     const uint8_t* expect = nullptr,
+                                     CrealityWaitFn wait = nullptr);
 
 // Whether sector 1 of the card on the reader opens with the factory key
 // FFFFFFFFFFFF, and if so whether its data blocks hold nothing. A card that
