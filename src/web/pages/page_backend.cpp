@@ -25,6 +25,8 @@
 #include "services/backend.h"
 #include "services/backend_api.h"
 #include "services/filaman_api.h"
+#include "services/ams_presence.h"
+#include "services/user_options.h"
 #include "services/settings_registry.h"
 #include "web/web_access.h"
 #include "web/web_jobs.h"
@@ -38,6 +40,20 @@
 // exists in every mode now. It used to be skipped unless the backend was
 // FilaMan.
 static const char* label() { return T(STR_W_NAV_BACKEND); }
+
+// The AMS link's state in words, for the card and for its status poll.
+static const char* sideStateText() {
+  switch (amsSideState()) {
+    case AMS_SIDE_OFF:         return T(STR_BBSIDE_ST_OFF);
+    case AMS_SIDE_NO_HOST:     return T(STR_BBSIDE_ST_NO_HOST);
+    case AMS_SIDE_OK:          return T(STR_BBSIDE_ST_OK);
+    case AMS_SIDE_UNREACHABLE: return T(STR_BBSIDE_ST_UNREACHABLE);
+    case AMS_SIDE_KEY:         return T(STR_BBSIDE_ST_KEY);
+    case AMS_SIDE_LOCAL:       return T(STR_BBSIDE_ST_LOCAL);
+    case AMS_SIDE_OTHER:       return T(STR_BBSIDE_ST_OTHER);
+    default:                   return T(STR_BBSIDE_ST_UNCHECKED);
+  }
+}
 
 static String body() {
   const bool creds = backendIsFilaMan() || backendIsBamBuddy();
@@ -196,6 +212,41 @@ static String body() {
       h += F("</p>");
     }
     h += F("</div>");
+
+    // BamBuddy beside Spoolman, for the AMS only. Address and key here, the
+    // switch itself among the options below - it is a registry row like the
+    // bay question it unlocks.
+    const AmsSideState st = amsSideState();
+    h += F("<div class='card wide'><h2>");
+    h += T(STR_W_C_BBSIDE);
+    h += F("</h2><p class='hint'>");
+    h += T(STR_W_BBSIDE_NOTE);
+    h += F("</p><div class='field'><label>");
+    h += T(STR_W_HOST_LABEL);
+    h += F(" &middot; BamBuddy</label><div class='inrow'>"
+           "<input id='bsh' type='text' maxlength='63' spellcheck='false' value='");
+    h += htmlEsc(bambuddyHost());
+    h += F("' placeholder='192.168.178.20:8000'></div></div><div class='field'><label>");
+    h += T(STR_W_APIKEY);
+    h += F(" &middot; ");
+    h += T(bambuddyApiKey()[0] ? STR_W_SET : STR_W_UNSET);
+    h += F("</label><div class='inrow'><input id='bsk' type='password' "
+           "autocomplete='new-password' placeholder='bb_...' value='");
+    h += bambuddyApiKey()[0] ? F("________________") : F("");
+    h += F("'></div></div><div class='inrow'><button id='bs-b'>");
+    h += T(STR_W_SAVE);
+    h += F("</button><span class='msg' id='bs-s'></span></div>"
+           "<div class='rows' style='margin-top:12px'><div class='row'><span class='k'>");
+    h += T(STR_W_BBSIDE_STATE);
+    h += F("</span><span class='v'><span id='bs-st' class='pill ");
+    h += (st == AMS_SIDE_OK) ? F("ok'>") : F("bd'>");
+    h += htmlEsc(sideStateText());
+    if (st == AMS_SIDE_OTHER && amsSideSeenSpoolman()[0]) {
+      h += F(" (");
+      h += htmlEsc(amsSideSeenSpoolman());
+      h += F(")");
+    }
+    h += F("</span></span></div></div></div>");
   } else if (backendIsBamBuddy()) {
     // One key rather than two, and it may legitimately stay empty: an
     // instance with authentication switched off answers without it.
@@ -308,6 +359,18 @@ static String body() {
          // A secret typed in now belongs to this address: the line asking
          // for it goes.
          "if(guard(k)&&$('sa-r'))$('sa-r').style.display='none';});});}"
+         // The AMS link beside Spoolman: address and key in one post, the key
+         // kept when the field still shows the underscores. The state is asked
+         // for a few seconds later, after the loop has run the check.
+         "if($('bs-b')){"
+         "const bsPoll=function(n){getJson('/api/bambuddy/side').then(function(d){"
+         "if(!d)return;const p=$('bs-st');p.textContent=d.text;"
+         "p.className='pill '+(d.ok?'ok':'bd');"
+         "if(d.pending&&n<10)setTimeout(function(){bsPoll(n+1);},1500);});};"
+         "$('bs-b').addEventListener('click',function(){"
+         "const k=$('bsk').value;"
+         "postFlash('/api/bambuddy/side',$('bsh').value+'\\n'+(guard(k)?'1'+k:'0'),'bs-s')"
+         ".then(function(r){if(r.ok)setTimeout(function(){bsPoll(0);},1500);});});}"
          "function setKey(){const v=$('fk').value;"
          "if(!guard(v))return;postFlash('/api/filaman/key',v,'fk-s');}"
          "function reg(){flash('fc-s',M.test,false);"
@@ -604,6 +667,45 @@ static void routes(WebServer &srv) {
       return;
     }
     srv.send(200, "application/json", "{\"state\":\"idle\"}");
+  });
+
+  // Body: host, then the key line - "1" with a new key behind it, "0" to keep
+  // the stored one. An empty host clears the address, which switches the link
+  // off as surely as the option does.
+  srv.on("/api/bambuddy/side", HTTP_POST, [&srv]() {
+    if (!webRequire(srv, GATE_CONFIG, T(STR_W_NAV_BACKEND))) return;
+    const String body = srv.arg("plain");
+    const int nl = body.indexOf('\n');
+    if (nl < 0) { srv.send(400, "text/plain", T(STR_W_ERROR)); return; }
+    String host = body.substring(0, nl);
+    String rest = body.substring(nl + 1);
+    host.trim();
+    if (rest.length() == 0) { srv.send(400, "text/plain", T(STR_W_ERROR)); return; }
+    if (rest[0] == '1') {
+      String key = rest.substring(1);
+      key.trim();
+      if (key.length() > 0 && key.length() < 8) {
+        srv.send(400, "text/plain", T(STR_W_ERROR));
+        return;
+      }
+      bambuddySetApiKey(key.c_str());
+    }
+    bambuddySetHost(host.c_str());
+    amsSideReset();
+    amsPresenceForget();
+    logSDf("Web: AMS link via BamBuddy %s", bambuddyBaseUrl()[0] ? bambuddyBaseUrl() : "(none)");
+    srv.send(200, "text/plain", T(STR_W_SAVED));
+  });
+  srv.on("/api/bambuddy/side", HTTP_GET, [&srv]() {
+    if (!webRequire(srv, GATE_CONFIG, T(STR_W_NAV_BACKEND))) return;
+    const AmsSideState st = amsSideState();
+    String text = sideStateText();
+    if (st == AMS_SIDE_OTHER && amsSideSeenSpoolman()[0])
+      text += String(" (") + amsSideSeenSpoolman() + ")";
+    String j = String("{\"ok\":") + (st == AMS_SIDE_OK ? "true" : "false") +
+               ",\"pending\":" + (st == AMS_SIDE_UNCHECKED ? "true" : "false") +
+               ",\"text\":\"" + jsonEsc(text.c_str()) + "\"}";
+    srv.send(200, "application/json", j);
   });
 
   srv.on("/api/filaman/key", HTTP_POST, [&srv]() {

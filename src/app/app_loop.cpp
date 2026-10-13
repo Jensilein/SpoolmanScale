@@ -1047,6 +1047,10 @@ void appLoop() {
   perfSection("ams");
   amsDetailBatchTick();
   amsPickTick();
+  // The AMS link to BamBuddy beside Spoolman: checked before the presence
+  // question below can use it. Paces itself; not under a question on screen
+  // and not while the drying batch reads the inventory mode on the other core.
+  if (wifi_ok && !uiModalWaiting() && !isAmsViewOpen() && !driedBatchBusy()) amsSideTick();
   amsPresenceTick();
   // Watches the reader for the tag on the other flange while its question
   // stands. It has to run every pass, not only when something happened: the

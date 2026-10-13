@@ -276,6 +276,20 @@ void bambuddySetApiKey(const char* key) {
   logSDf("Backend: BamBuddy API key %s", s_bambuddy_key[0] ? "stored" : "cleared");
 }
 
+const char* bambuddyHost()    { return s_bambuddy_host; }
+const char* bambuddyBaseUrl() { return s_bambuddy_base; }
+
+void bambuddySetHost(const char* host) {
+  if (!host) return;
+  char clean[64];
+  backendCleanHost(host, clean, sizeof(clean));
+  strncpy(s_bambuddy_host, clean, sizeof(s_bambuddy_host) - 1);
+  s_bambuddy_host[sizeof(s_bambuddy_host) - 1] = '\0';
+  rebuildBamBuddyBase();
+  prefsPutString(NVS_BAMBUDDY_HOST, s_bambuddy_host);
+  logSDf("Backend: BamBuddy host -> %s", s_bambuddy_host[0] ? s_bambuddy_host : "(none)");
+}
+
 uint8_t     spoolmanAuthMode()   { return s_sm_auth; }
 const char* spoolmanAuthUser()   { return s_sm_user; }
 const char* spoolmanAuthSecret() { return s_sm_secret; }

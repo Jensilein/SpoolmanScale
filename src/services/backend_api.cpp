@@ -3,6 +3,7 @@
 #include <ctype.h>
 #include <esp_mac.h>
 #include <string.h>
+#include <strings.h>
 
 #include "app/app_state.h"
 #include "hardware/sd_logger.h"
@@ -1223,52 +1224,144 @@ bool backendCanPatchLastDried() {
 //  AMS SLOTS
 // ------------------------------------------------------------
 
-bool backendHasAmsView() {
-  switch (backendMode()) {
-    case BACKEND_FILAMAN:
-    case BACKEND_BAMBUDDY: return backendIsConfigured();
-    default:               return false;
+// ---- AMS through BamBuddy beside Spoolman -----------------------------
+
+static AmsSideState  s_side_state   = AMS_SIDE_UNCHECKED;
+static unsigned long s_side_next_ms = 0;
+static char          s_side_seen[96] = "";
+
+#define AMS_SIDE_RECHECK_OK_MS    (5UL * 60UL * 1000UL)
+#define AMS_SIDE_RECHECK_FAIL_MS  (60UL * 1000UL)
+
+// "host[:port]" in lower case, scheme and trailing slashes gone: the form two
+// addresses of the same Spoolman agree on.
+static void sideNormUrl(const char* in, char* out, size_t n) {
+  if (!out || n == 0) return;
+  out[0] = '\0';
+  if (!in) return;
+  if (strncasecmp(in, "http://", 7) == 0)       in += 7;
+  else if (strncasecmp(in, "https://", 8) == 0) in += 8;
+  size_t j = 0;
+  for (size_t i = 0; in[i] && j + 1 < n; i++) out[j++] = (char)tolower((unsigned char)in[i]);
+  while (j > 0 && out[j - 1] == '/') j--;
+  out[j] = '\0';
+}
+
+static bool sideWanted() {
+  return backendMode() == BACKEND_SPOOLMAN && g_ams_bb_side;
+}
+
+AmsSideState amsSideState() {
+  if (!sideWanted()) return AMS_SIDE_OFF;
+  if (strlen(bambuddyBaseUrl()) <= 7) return AMS_SIDE_NO_HOST;   // "http://"
+  return s_side_state;
+}
+
+const char* amsSideSeenSpoolman() { return s_side_seen; }
+
+void amsSideReset() {
+  s_side_state   = AMS_SIDE_UNCHECKED;
+  s_side_next_ms = 0;
+  s_side_seen[0] = '\0';
+}
+
+static const char* sideStateName(AmsSideState st) {
+  switch (st) {
+    case AMS_SIDE_OK:          return "ok";
+    case AMS_SIDE_UNREACHABLE: return "unreachable";
+    case AMS_SIDE_KEY:         return "key refused";
+    case AMS_SIDE_LOCAL:       return "BamBuddy keeps its own inventory";
+    case AMS_SIDE_OTHER:       return "BamBuddy proxies another Spoolman";
+    default:                   return "unchecked";
   }
 }
 
+void amsSideTick() {
+  const AmsSideState now = amsSideState();
+  if (now == AMS_SIDE_OFF || now == AMS_SIDE_NO_HOST) return;
+  if (s_side_state != AMS_SIDE_UNCHECKED && (long)(millis() - s_side_next_ms) < 0) return;
+
+  HttpStallTime stall(__func__);   // the loop stands still for this call
+  const int code = bbDetectInventoryMode(bambuddyBaseUrl(), bambuddyApiKey(), 4000);
+  AmsSideState st;
+  s_side_seen[0] = '\0';
+  if (code == 401 || code == 403) {
+    st = AMS_SIDE_KEY;
+  } else if (code != 200) {
+    st = AMS_SIDE_UNREACHABLE;
+  } else if (bbInventoryMode() != BB_INV_SPOOLMAN) {
+    st = AMS_SIDE_LOCAL;
+  } else {
+    char a[96], b[96];
+    sideNormUrl(bbSpoolmanUrl(), a, sizeof(a));
+    sideNormUrl(cfg_spoolman_base, b, sizeof(b));
+    snprintf(s_side_seen, sizeof(s_side_seen), "%s", bbSpoolmanUrl());
+    st = (a[0] && strcmp(a, b) == 0) ? AMS_SIDE_OK : AMS_SIDE_OTHER;
+  }
+
+  // A line on the first answer and on every change, not on every recheck.
+  if (st != s_side_state) {
+    if (st == AMS_SIDE_OTHER) {
+      logSDf("AMS link: BamBuddy %s proxies %s, this scale uses %s - not used",
+             bambuddyBaseUrl(), bbSpoolmanUrl(), cfg_spoolman_base);
+    } else {
+      logSDf("AMS link: BamBuddy %s - %s (HTTP %d)", bambuddyBaseUrl(),
+             sideStateName(st), code);
+    }
+  }
+  s_side_state   = st;
+  s_side_next_ms = millis() + (st == AMS_SIDE_OK ? AMS_SIDE_RECHECK_OK_MS
+                                                 : AMS_SIDE_RECHECK_FAIL_MS);
+}
+
+// The one question every AMS call below asks: does it go to BamBuddy, and to
+// which address. BamBuddy as the backend, or BamBuddy beside Spoolman once
+// the check above has found it on the same Spoolman.
+static bool amsViaBb() {
+  if (backendMode() == BACKEND_BAMBUDDY) return backendIsConfigured();
+  return amsSideState() == AMS_SIDE_OK;
+}
+
+static const char* amsBbBase() {
+  return (backendMode() == BACKEND_BAMBUDDY) ? backendBaseUrl() : bambuddyBaseUrl();
+}
+
+bool backendHasAmsView() {
+  if (backendMode() == BACKEND_FILAMAN) return backendIsConfigured();
+  return amsViaBb();
+}
+
 bool backendCanAssignAmsSlot() {
-  return backendMode() == BACKEND_BAMBUDDY && backendIsConfigured();
+  return amsViaBb();
 }
 
 int backendListPrinters(AmsPrinterList& out, uint32_t timeout_ms) {
   HttpStallTime stall(__func__);   // the loop stands still for this call
-  switch (backendMode()) {
-    case BACKEND_FILAMAN:
-      return filamanListPrinters(backendBaseUrl(), filamanApiKey(), out, timeout_ms);
-    case BACKEND_BAMBUDDY:
-      return bbListPrinters(backendBaseUrl(), bambuddyApiKey(), out, timeout_ms);
-    default:
-      // Spoolman keeps filament, not printers. location is free text about
-      // shelves and nothing an AMS bay may be mapped onto.
-      out = AmsPrinterList{};
-      return notSupported("ListPrinters");
-  }
+  if (backendMode() == BACKEND_FILAMAN)
+    return filamanListPrinters(backendBaseUrl(), filamanApiKey(), out, timeout_ms);
+  if (amsViaBb())
+    return bbListPrinters(amsBbBase(), bambuddyApiKey(), out, timeout_ms);
+  // Spoolman keeps filament, not printers. location is free text about
+  // shelves and nothing an AMS bay may be mapped onto.
+  out = AmsPrinterList{};
+  return notSupported("ListPrinters");
 }
 
 int backendGetAmsState(int printer_id, AmsSlotState& out, uint32_t timeout_ms) {
   HttpStallTime stall(__func__);   // the loop stands still for this call
-  switch (backendMode()) {
-    case BACKEND_FILAMAN:
-      return filamanGetAmsState(backendBaseUrl(), filamanApiKey(), printer_id,
-                                out, timeout_ms);
-    case BACKEND_BAMBUDDY:
-      return bbGetAmsState(backendBaseUrl(), bambuddyApiKey(), printer_id,
-                           out, timeout_ms);
-    default:
-      out = AmsSlotState{};
-      return notSupported("GetAmsState");
-  }
+  if (backendMode() == BACKEND_FILAMAN)
+    return filamanGetAmsState(backendBaseUrl(), filamanApiKey(), printer_id,
+                              out, timeout_ms);
+  if (amsViaBb())
+    return bbGetAmsState(amsBbBase(), bambuddyApiKey(), printer_id, out, timeout_ms);
+  out = AmsSlotState{};
+  return notSupported("GetAmsState");
 }
 
 int backendAssignAmsSlot(int spool_id, int printer_id, int ams_id, int tray_id,
                          uint32_t timeout_ms) {
   HttpStallTime stall(__func__);   // the loop stands still for this call
-  if (backendMode() != BACKEND_BAMBUDDY) {
+  if (!amsViaBb()) {
     // FilaMan is the interesting no here. It does have an AMS assignment,
     // but no model in which the scale names a bay and the database takes it:
     // there the scale opens a time window and the next tray to be loaded
@@ -1276,15 +1369,15 @@ int backendAssignAmsSlot(int spool_id, int printer_id, int ams_id, int tray_id,
     // this function would equate two different mechanisms.
     return notSupported("AssignAmsSlot");
   }
-  return bbAssignSlot(backendBaseUrl(), bambuddyApiKey(), spool_id, printer_id,
+  return bbAssignSlot(amsBbBase(), bambuddyApiKey(), spool_id, printer_id,
                       ams_id, tray_id, timeout_ms);
 }
 
 int backendUnassignAmsSlot(int spool_id, int printer_id, int ams_id, int tray_id,
                            uint32_t timeout_ms) {
   HttpStallTime stall(__func__);   // the loop stands still for this call
-  if (backendMode() != BACKEND_BAMBUDDY) return notSupported("UnassignAmsSlot");
-  return bbUnassignSlot(backendBaseUrl(), bambuddyApiKey(), spool_id, printer_id,
+  if (!amsViaBb()) return notSupported("UnassignAmsSlot");
+  return bbUnassignSlot(amsBbBase(), bambuddyApiKey(), spool_id, printer_id,
                         ams_id, tray_id, timeout_ms);
 }
 
@@ -1293,16 +1386,16 @@ int backendFindSpoolSlot(int spool_id, int printer_id, int* out_ams,
   HttpStallTime stall(__func__);   // the loop stands still for this call
   if (out_ams)  *out_ams  = -1;
   if (out_tray) *out_tray = -1;
-  if (backendMode() != BACKEND_BAMBUDDY) return notSupported("FindSpoolSlot");
-  return bbFindSpoolSlot(backendBaseUrl(), bambuddyApiKey(), spool_id, printer_id,
+  if (!amsViaBb()) return notSupported("FindSpoolSlot");
+  return bbFindSpoolSlot(amsBbBase(), bambuddyApiKey(), spool_id, printer_id,
                          out_ams, out_tray, timeout_ms);
 }
 
 int backendFindBaySpool(int printer_id, int ams_id, int tray_id,
                         uint32_t timeout_ms) {
   HttpStallTime stall(__func__);   // the loop stands still for this call
-  if (backendMode() != BACKEND_BAMBUDDY) return notSupported("FindBaySpool");
-  return bbFindBaySpool(backendBaseUrl(), bambuddyApiKey(), printer_id,
+  if (!amsViaBb()) return notSupported("FindBaySpool");
+  return bbFindBaySpool(amsBbBase(), bambuddyApiKey(), printer_id,
                         ams_id, tray_id, timeout_ms);
 }
 
@@ -1310,8 +1403,8 @@ int backendFindPrinterSpools(int printer_id, AmsSlotSpool* out, uint8_t max,
                              uint8_t* out_count, uint32_t timeout_ms) {
   HttpStallTime stall(__func__);   // the loop stands still for this call
   if (out_count) *out_count = 0;
-  if (backendMode() != BACKEND_BAMBUDDY) return notSupported("FindPrinterSpools");
-  return bbFindPrinterSpools(backendBaseUrl(), bambuddyApiKey(), printer_id,
+  if (!amsViaBb()) return notSupported("FindPrinterSpools");
+  return bbFindPrinterSpools(amsBbBase(), bambuddyApiKey(), printer_id,
                              out, max, out_count, timeout_ms);
 }
 
@@ -1321,8 +1414,8 @@ int backendFindUnitSpools(int printer_id, int ams_id, int* out_by_tray,
   if (out_by_tray) {
     for (uint8_t i = 0; i < n; i++) out_by_tray[i] = 0;
   }
-  if (backendMode() != BACKEND_BAMBUDDY) return notSupported("FindUnitSpools");
-  return bbFindUnitSpools(backendBaseUrl(), bambuddyApiKey(), printer_id,
+  if (!amsViaBb()) return notSupported("FindUnitSpools");
+  return bbFindUnitSpools(amsBbBase(), bambuddyApiKey(), printer_id,
                           ams_id, out_by_tray, n, timeout_ms);
 }
 

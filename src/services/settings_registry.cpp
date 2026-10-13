@@ -11,6 +11,8 @@
 
 #include "services/ams_assign.h"
 #include "services/backend.h"
+#include "services/backend_api.h"
+#include "services/ams_presence.h"
 #include "services/prefs_store.h"
 #include "services/tag_field.h"
 #include "services/user_options.h"
@@ -61,6 +63,16 @@ static const char* subExtraFields() {
 // BamBuddy has no field for a drying date at all, so the scale needs somewhere
 // to put one. The Spoolman route only exists while BamBuddy is actually
 // proxying to a Spoolman server - past BamBuddy, into the same database.
+// The bay question needs BamBuddy: as the backend, or beside Spoolman.
+static bool appliesAmsAsk() { return backendIsBamBuddy() || g_ams_bb_side; }
+
+// A changed AMS link is checked again at once, and the AMS chip forgets what
+// it learned through the old one.
+static void onAmsSideChange() {
+  amsSideReset();
+  amsPresenceForget();
+}
+
 static bool bbDriedOptOk(uint8_t value) {
   if (value != BB_DRIED_SPOOLMAN) return true;
   return (bbInventoryMode() == BB_INV_SPOOLMAN) && bbSpoolmanUrl()[0];
@@ -190,10 +202,17 @@ const SettingDesc SETTINGS[] = {
   // The bay picker after weighing. A plain switch: BamBuddy knows only "ask"
   // and "off" here, because without a time window there is no third thing an
   // "always" could mean.
-  { "bb_ams_ask", SET_BOOL, SC_BAMBUDDY, &g_ams_pick_ask,
+  { "bb_ams_ask", SET_BOOL, SC_BAMBUDDY | SC_SPOOLMAN, &g_ams_pick_ask,
     STR_BBAMS_ASK, STR_BBAMS_ASK_SUB, STR_BBAMS_ASK_INFO, LV_SYMBOL_SHUFFLE,
     0, 0, nullptr,
-    nullptr, nullptr, nullptr, OPEN_NONE, nullptr, false },
+    appliesAmsAsk, nullptr, nullptr, OPEN_NONE, nullptr, false },
+
+  // Spoolman stays the backend and BamBuddy is asked about the AMS only. The
+  // address and key are entered on the web page, next to this switch's card.
+  { "bb_side", SET_BOOL, SC_SPOOLMAN, &g_ams_bb_side,
+    STR_BBSIDE_TITLE, STR_BBSIDE_SUB, STR_BBSIDE_INFO, LV_SYMBOL_SHUFFLE,
+    0, 0, nullptr,
+    nullptr, nullptr, onAmsSideChange, OPEN_NONE, nullptr, false },
 };
 
 const size_t SETTINGS_COUNT = sizeof(SETTINGS) / sizeof(SETTINGS[0]);

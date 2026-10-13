@@ -79,6 +79,14 @@ void        filamanSetDeviceToken(const char* token);   // persists
 const char* bambuddyApiKey();
 void        bambuddySetApiKey(const char* key);         // persists
 
+// BamBuddy's address, whatever backend is active. Kept apart from
+// backendHost() because the AMS link (backend_api.h, amsSide*) talks to
+// BamBuddy while Spoolman stays the backend. Same NVS key as the BamBuddy
+// backend uses, so a scale that ran on BamBuddy before keeps its address.
+const char* bambuddyHost();
+const char* bambuddyBaseUrl();
+void        bambuddySetHost(const char* host);          // persists, cleaned
+
 // Access to a Spoolman server. Spoolman itself has none ("no authentication by
 // design"), so this is for Spoolman behind a proxy with a password, and for a
 // server that speaks Spoolman's API and wants a key. Nothing is sent until a

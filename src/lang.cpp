@@ -3214,6 +3214,48 @@ const char* const STRINGS[][3] = {
   { "Der Tag trägt die Daten eines anderen Filaments. Nur überschreiben, wenn die Spule neu bespult wurde.",
     "The tag carries another filament's data. Only overwrite it if the spool has been refilled.",
     "Le tag porte les données d'un autre filament. À n'écraser que si la bobine a été rembobinée." },  // STR_TW_CFS_OVR_HINT
+  { "AMS über BamBuddy",
+    "AMS via BamBuddy",
+    "AMS via BamBuddy" },  // STR_BBSIDE_TITLE
+  { "Spoolman bleibt Backend",
+    "Spoolman stays the backend",
+    "Spoolman reste le backend" },  // STR_BBSIDE_SUB
+  { "An: Die Waage fragt BamBuddy nach Druckern und AMS-Fächern und weist Spulen einem Fach zu. Alles andere bleibt bei Spoolman.\n\nVoraussetzung: BamBuddy arbeitet mit demselben Spoolman wie die Waage, sonst wird die Verbindung nicht benutzt. Adresse und API-Schlüssel stehen auf der Webseite unter Backend.",
+    "On: the scale asks BamBuddy about printers and AMS bays and assigns spools to a bay. Everything else stays with Spoolman.\n\nBamBuddy has to run on the same Spoolman as the scale, otherwise the link is not used. Address and API key are set on the web page under Backend.",
+    "Activé : la balance interroge BamBuddy sur les imprimantes et les bacs AMS et affecte les bobines. Le reste reste dans Spoolman.\n\nBamBuddy doit utiliser le même Spoolman que la balance, sinon le lien n'est pas utilisé. Adresse et clé API : page web, Backend." },  // STR_BBSIDE_INFO
+  { "BamBuddy für das AMS",
+    "BamBuddy for the AMS",
+    "BamBuddy pour l'AMS" },  // STR_W_C_BBSIDE
+  { "Nur für die AMS-Zuweisung, Spoolman bleibt das Backend. BamBuddy muss denselben Spoolman verwenden. Den Schlüssel in BamBuddy unter Einstellungen > API-Schlüssel anlegen, mindestens mit Read Status und Manage Inventory.",
+    "For the AMS assignment only, Spoolman stays the backend. BamBuddy has to use the same Spoolman. Create the key in BamBuddy under Settings > API Keys, with at least Read Status and Manage Inventory.",
+    "Pour l'affectation AMS seulement, Spoolman reste le backend. BamBuddy doit utiliser le même Spoolman. Créez la clé dans BamBuddy (Paramètres > Clés API), avec Read Status et Manage Inventory." },  // STR_W_BBSIDE_NOTE
+  { "Verbindung",
+    "Link",
+    "Lien" },  // STR_W_BBSIDE_STATE
+  { "Ausgeschaltet (Weitere Optionen)",
+    "Switched off (more options)",
+    "Désactivé (autres options)" },  // STR_BBSIDE_ST_OFF
+  { "Keine Adresse",
+    "No address",
+    "Sans adresse" },  // STR_BBSIDE_ST_NO_HOST
+  { "Wird geprüft",
+    "Being checked",
+    "Vérification" },  // STR_BBSIDE_ST_UNCHECKED
+  { "Verbunden, gleicher Spoolman",
+    "Connected, same Spoolman",
+    "Connecté, même Spoolman" },  // STR_BBSIDE_ST_OK
+  { "Nicht erreichbar",
+    "Not reachable",
+    "Injoignable" },  // STR_BBSIDE_ST_UNREACHABLE
+  { "API-Schlüssel abgelehnt",
+    "API key refused",
+    "Clé API refusée" },  // STR_BBSIDE_ST_KEY
+  { "BamBuddy nutzt nicht Spoolman",
+    "BamBuddy does not use Spoolman",
+    "BamBuddy sans Spoolman" },  // STR_BBSIDE_ST_LOCAL
+  { "BamBuddy nutzt einen anderen Spoolman",
+    "BamBuddy uses another Spoolman",
+    "BamBuddy, autre Spoolman" },  // STR_BBSIDE_ST_OTHER
 };
 
 StringID tagWriteResultString(uint8_t code) {

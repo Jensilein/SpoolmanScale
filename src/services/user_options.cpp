@@ -20,6 +20,7 @@ bool g_card_uids_write = false;
 bool g_hw_uid_write = false;
 bool g_osm_tag = false;
 bool g_ams_pick_ask = false;
+bool g_ams_bb_side = false;
 bool g_tag2_ask = false;
 bool g_flm_bambu_tags = false;
 bool g_flm_ext_id = true;

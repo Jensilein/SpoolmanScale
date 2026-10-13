@@ -251,6 +251,9 @@ extern bool g_tag2_ask;
 // and every weighing opens a window; here there is no window and no implicit
 // bay, so an "always" would have nothing to do.
 extern bool g_ams_pick_ask;
+// Spoolman stays the backend, BamBuddy is asked only about the AMS: printers,
+// bays and the assignment of a spool to a bay. See amsSide* in backend_api.h.
+extern bool g_ams_bb_side;
 
 // Whether the device may use Bluetooth Low Energy at all. Off by default, and
 // off means the BLE stack is never started: no radio time shared with WiFi,
