@@ -128,6 +128,17 @@ CrealityScanResult scanCrealityTag(uint8_t *uid, uint8_t uid_len, bool fresh) {
          g_tag.color_hex[0] ? g_tag.color_hex : "-",
          (unsigned)t.weight_g, t.serial);
 
+  // The card is still authenticated after the read and does not answer the
+  // next poll, so the loop declared it removed 1.5 s after every read while
+  // the spool lay on the pad (12.10.2026), and found it again moments later.
+  // Bring it back to a freshly selected state, the one the polls see.
+  bool silent = false;
+  int back = wakeCard(uid, uid_str, &silent);
+  if (back != 1) {
+    logSDf("NFC: %s after the read: %s", uid_str,
+           back ? "awake again after a reset" : "no answer to the next poll");
+  }
+
   g_tag_ready = true;
   return CREALITY_SCAN_OK;
 }
