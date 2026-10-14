@@ -203,6 +203,8 @@ void requestAmsViewFromScaleMenu() {
 
 bool isAmsViewOpen() { return s_scr != nullptr; }
 
+bool amsViewLoading() { return s_scr != nullptr && (s_build_pending || s_fetch_pending); }
+
 int  amsViewPrinterId() { return s_printer_id; }
 
 // One place that lets go of the page. The fetch pumps LVGL, so the pointers
@@ -1314,6 +1316,9 @@ void handleAmsViewDeferredActions() {
     buildScreen();
     hideAllOverlays();
     if (s_scr) lv_obj_clear_flag(s_scr, LV_OBJ_FLAG_HIDDEN);
+    // "Loading AMS bays" from the lift stays in front until the bays are
+    // drawn, rather than giving way to an empty page.
+    loadingOverlayRaise();
     s_fetch_pending = true;
     return;      // one pass to draw, the next one to fetch
   }

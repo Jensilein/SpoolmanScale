@@ -40,6 +40,10 @@ void loadingOverlayTick();
 // indicator so a slow network looks slow rather than stuck.
 void loadingOverlayProgress(size_t bytes_read);
 
+// Puts it back on top, for a screen that was built after it and would
+// otherwise cover it.
+void loadingOverlayRaise();
+
 // Takes it down. Must be called on every path out of the work, including the
 // ones that fail early, or it stays on top of whatever is built next.
 void loadingOverlayHide();

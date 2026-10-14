@@ -139,3 +139,9 @@ void loadingOverlayHide() {
   lbl_bytes   = nullptr;
   arc_loading = nullptr;
 }
+
+void loadingOverlayRaise() {
+  if (!scr_loading) return;
+  lv_obj_move_foreground(scr_loading);
+  lv_refr_now(nullptr);
+}

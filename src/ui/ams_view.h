@@ -52,6 +52,8 @@ void handleAmsViewDeferredActions();
 
 // True while the page is up, so the loop knows a fetch may still be running.
 bool isAmsViewOpen();
+// The page stands but its first fetch has not drawn yet.
+bool amsViewLoading();
 
 // The printer the page last read, or 0. The pick callback needs it: the bay
 // is only half an address, and the view is what resolved the other half.

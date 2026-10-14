@@ -213,8 +213,8 @@ static void onPicked(int ams_id, int tray_id) {
 static void openPicker() {
   char fmt[48], head[80];
   copyT(fmt, sizeof(fmt), STR_AMSV_PICK_HEAD);
-  // The page takes over from here; its own status line says when it loads.
-  amsPickHintHide();
+  // The hint stays up over the page until its bays are drawn, see
+  // amsPickTick().
   snprintf(head, sizeof(head), fmt,
            s_pending.name[0] ? s_pending.name : "");
   requestAmsView(AMS_VIEW_PICK, onPicked, head);
@@ -276,7 +276,8 @@ void amsPickOpenFor(int spool_id, const char* spool_name) {
 void amsPickTick() {
   // Never left standing: a lift that turned out to be none, or a question
   // that did not come, takes it down after a few seconds.
-  if (s_hint_up && (millis() - s_hint_ms > kHintMaxMs || isAmsViewOpen())) amsPickHintHide();
+  if (s_hint_up && (millis() - s_hint_ms > kHintMaxMs ||
+                    (isAmsViewOpen() && !amsViewLoading()))) amsPickHintHide();
   if (!s_pending.active) return;
   if (isAmsViewOpen()) return;          // the question is on screen, let it stand
   if (amsPickPendingAgeMs() <= AMS_PICK_MAX_MS) return;
