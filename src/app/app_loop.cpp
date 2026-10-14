@@ -2012,6 +2012,16 @@ void appLoop() {
             tagFamilySet(uid, TAG_FAMILY_CREALITY);
             nfc_retry_count = NFC_MAX_RETRIES;
             last_nfc_check_ms = 0;
+          } else if (g_creality_tags && family == TAG_FAMILY_CREALITY &&
+                     (factory = crealityProbeFactory(uid, uid_str)) != CREALITY_FACTORY_REFUSED) {
+            // Remembered as Creality, but now on the factory key: erased
+            // since (CFtag, FilaStation). On 14.10.2026 both tags of spool 9
+            // were erased with CFtag and the scale kept trying the Creality
+            // key only, so it never offered to write them again. Treated like
+            // any blank sticker from here on. A weak Creality tag that did not
+            // answer refuses this key too and goes on below as before.
+            tagFamilySet(uid, TAG_FAMILY_UNKNOWN);
+            blank_now = true;
           } else if (g_creality_tags && family == TAG_FAMILY_CREALITY) {
             // A known Creality tag that did not open this time - one side of a
             // spool lying badly on the pad (12.10.2026). The Bambu scan would
