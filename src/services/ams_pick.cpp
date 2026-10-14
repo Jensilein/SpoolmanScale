@@ -9,6 +9,7 @@
 #include "services/ams_presence.h"
 #include "services/backend_api.h"
 #include "services/server_reach.h"
+#include "services/tag_field.h"
 #include "services/location_state.h"
 #include "services/user_options.h"
 #include "ui/ams_view.h"
@@ -28,13 +29,40 @@ struct Pending {
 
 Pending s_pending;
 
+// An assignment sent from the picker, watched for a few minutes. BamBuddy
+// releases a bay that the AMS reports as unreadable ("?") once that has
+// lasted two minutes - which is what an assignment sent before the spool went
+// in turns into (14.10.2026, Overture #10 in AMS-A bay 4). Sent again while
+// the spool sits in the bay, it holds, because BamBuddy then configures the
+// bay. So the order of "put it in" and "tap the bay" no longer matters.
+struct Recheck {
+  bool          active;
+  int           spool_id;
+  int           printer_id;
+  int           ams_id;
+  int           tray_id;
+  unsigned long since_ms;
+  uint8_t       round;      // index into kRecheckAtMs
+  uint8_t       resent;
+};
+
+Recheck s_recheck;
+
+// After BamBuddy's two minute hold, then twice more for a spool that went in
+// late. Ends after the last one.
+const unsigned long kRecheckAtMs[] = {150000UL, 300000UL, 480000UL};
+const uint8_t       kRecheckRounds = sizeof(kRecheckAtMs) / sizeof(kRecheckAtMs[0]);
+
+// Big enough to stay off the loop task's stack.
+AmsSlotState s_recheck_state;
+
 }  // namespace
 
 bool amsPickActive() {
   return g_ams_pick_ask && backendCanAssignAmsSlot();
 }
 
-void amsPickNote(int spool_id, const char* spool_name) {
+static void notePending(int spool_id, const char* spool_name) {
   if (spool_id <= 0) return;
   s_pending.active   = true;
   s_pending.spool_id = spool_id;
@@ -44,6 +72,20 @@ void amsPickNote(int spool_id, const char* spool_name) {
     strncpy(s_pending.name, spool_name, sizeof(s_pending.name) - 1);
     s_pending.name[sizeof(s_pending.name) - 1] = '\0';
   }
+}
+
+void amsPickNote(int spool_id, const char* spool_name) {
+  if (spool_id <= 0) return;
+  // A spool with a Bambu tag is not asked about: the AMS reads the tag and
+  // BamBuddy puts the spool into its bay by the tray uuid on its own. The
+  // question could only add a wrong answer. g_tag is cleared for every tag
+  // that is not a Bambu one, so a tray uuid here belongs to this spool.
+  if (tagIsBambu(g_tag.tray_uuid)) {
+    logSDf("AMSPICK: spool %d carries a Bambu tag, BamBuddy assigns it by itself - not asking",
+           spool_id);
+    return;
+  }
+  notePending(spool_id, spool_name);
 }
 
 bool amsPickHasPending()    { return s_pending.active; }
@@ -125,6 +167,14 @@ static void onPicked(int ams_id, int tray_id) {
     const bool moved = (was_ams >= 0 && (was_ams != ams_id || was_tray != tray_id));
     logSDf("AMSPICK: spool %d -> printer %d bay %d/%d (%s)",
            spool_id, printer_id, ams_id, tray_id, moved ? "moved" : "new");
+    s_recheck.active     = true;
+    s_recheck.spool_id   = spool_id;
+    s_recheck.printer_id = printer_id;
+    s_recheck.ams_id     = ams_id;
+    s_recheck.tray_id    = tray_id;
+    s_recheck.since_ms   = millis();
+    s_recheck.round      = 0;
+    s_recheck.resent     = 0;
     showInfoPopup(STR_AMSV_TITLE, moved ? STR_AMSV_MOVED : STR_AMSV_ASSIGNED,
                   INFO_DONE);
     // A spool going into the printer does not also need the storage location
@@ -179,7 +229,7 @@ void amsPickShow() {
 
 void amsPickOpenFor(int spool_id, const char* spool_name) {
   if (spool_id <= 0 || !backendCanAssignAmsSlot()) return;
-  amsPickNote(spool_id, spool_name);
+  notePending(spool_id, spool_name);
   logSDf("AMSPICK: picker opened by the AMS button for id=%d", spool_id);
   openPicker();
 }
@@ -190,4 +240,78 @@ void amsPickTick() {
   if (amsPickPendingAgeMs() <= AMS_PICK_MAX_MS) return;
   logSDf("AMSPICK: note for spool %d expired", s_pending.spool_id);
   amsPickDropPending();
+}
+
+// Whether the AMS reports a spool in the bay: the printer's presence bit, as
+// BamBuddy passes it on. An unreadable spool ("?") counts as present.
+static bool bayHoldsSpool(int printer_id, int ams_id, int tray_id, bool* known) {
+  *known = false;
+  if (backendGetAmsState(printer_id, s_recheck_state, 8000) != 200 ||
+      !s_recheck_state.valid) return false;
+  for (uint8_t u = 0; u < s_recheck_state.unit_count && u < AMS_UNITS_TOTAL; u++) {
+    const AmsSlotUnit& unit = s_recheck_state.unit[u];
+    if (unit.is_ext || unit.ams_id != ams_id) continue;
+    if (tray_id < 0 || tray_id >= unit.tray_count || tray_id >= AMS_MAX_TRAYS) return false;
+    *known = true;
+    return unit.tray[tray_id].exists;
+  }
+  return false;
+}
+
+void amsPickRecheckTick() {
+  if (!s_recheck.active) return;
+  if (!backendCanAssignAmsSlot()) { s_recheck.active = false; return; }
+  if (millis() - s_recheck.since_ms < kRecheckAtMs[s_recheck.round]) return;
+
+  Recheck& r = s_recheck;
+  const bool last = (r.round + 1 >= kRecheckRounds);
+  r.round++;
+  if (last) r.active = false;
+
+  int ams = -1, tray = -1;
+  const int code = backendFindSpoolSlot(r.spool_id, r.printer_id, &ams, &tray, 6000);
+  if (code != 200) {
+    logSDf("AMSPICK: recheck of spool %d could not ask BamBuddy, HTTP %d", r.spool_id, code);
+    return;
+  }
+  if (ams == r.ams_id && tray == r.tray_id) {
+    logSDf("AMSPICK: recheck %u, spool %d still in bay %d/%d", (unsigned)r.round,
+           r.spool_id, r.ams_id, r.tray_id);
+    return;
+  }
+  if (ams >= 0) {
+    // Moved since, by a tap here or in BamBuddy. Not ours to undo.
+    logSDf("AMSPICK: recheck, spool %d is in bay %d/%d now, not %d/%d - leaving it",
+           r.spool_id, ams, tray, r.ams_id, r.tray_id);
+    r.active = false;
+    return;
+  }
+  // Gone. Only sent again when the bay holds no other spool on file and the
+  // AMS reports something in it - an empty bay means the spool went
+  // elsewhere, or has not gone in yet.
+  const int other = backendFindBaySpool(r.printer_id, r.ams_id, r.tray_id, 6000);
+  if (other > 0 && other != r.spool_id) {
+    logSDf("AMSPICK: recheck, bay %d/%d holds spool %d now - leaving it",
+           r.ams_id, r.tray_id, other);
+    r.active = false;
+    return;
+  }
+  bool known = false;
+  const bool present = bayHoldsSpool(r.printer_id, r.ams_id, r.tray_id, &known);
+  if (!known || !present) {
+    logSDf("AMSPICK: recheck, assignment of spool %d to bay %d/%d is gone and the bay %s",
+           r.spool_id, r.ams_id, r.tray_id, known ? "is empty" : "could not be read");
+    return;
+  }
+  if (r.resent >= 2) {
+    logSDf("AMSPICK: recheck, assignment of spool %d dropped again, giving up", r.spool_id);
+    r.active = false;
+    return;
+  }
+  const int ac = serverReachNote(
+      backendAssignAmsSlot(r.spool_id, r.printer_id, r.ams_id, r.tray_id, 8000), true);
+  r.resent++;
+  logSDf("AMSPICK: recheck, BamBuddy had dropped spool %d from bay %d/%d - sent again, HTTP %d",
+         r.spool_id, r.ams_id, r.tray_id, ac);
+  // Looked at once more in the next round, if there is one.
 }

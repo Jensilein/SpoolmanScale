@@ -52,3 +52,8 @@ void amsPickOpenFor(int spool_id, const char* spool_name);
 
 // Drops a note nobody acted on. Called from appLoop().
 void amsPickTick();
+
+// Looks a few minutes after an assignment whether BamBuddy still has it, and
+// sends it again when BamBuddy dropped it while the spool sits in the bay.
+// Makes network calls: from appLoop() with WiFi up and nothing on screen.
+void amsPickRecheckTick();
