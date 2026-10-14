@@ -729,7 +729,10 @@ static void addCancelFill(lv_obj_t* btn) {
 // ran out and the page was asked to close.
 static bool tickPickCountdown() {
   if (!s_cancel_fill || !s_scr || s_close_pending || s_pick_pending) return false;
-  if (lv_obj_has_flag(s_scr, LV_OBJ_FLAG_HIDDEN) || isAmsDetailPopupOpen()) {
+  // A popup on top (a second tag being written, say) hides the question, so
+  // its time does not run. On 14.10.2026 the question for spool 9 ran out
+  // behind a 30 s tag write and came back a minute later.
+  if (lv_obj_has_flag(s_scr, LV_OBJ_FLAG_HIDDEN) || uiModalWaiting()) {
     restartPickCountdown();
   }
   const unsigned long rem = pickRemainingMs();
