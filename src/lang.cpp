@@ -3256,7 +3256,12 @@ const char* const STRINGS[][3] = {
   { "BamBuddy nutzt einen anderen Spoolman",
     "BamBuddy uses another Spoolman",
     "BamBuddy, autre Spoolman" },  // STR_BBSIDE_ST_OTHER
-  { "Nicht ins AMS", "Not into the AMS", "Pas dans l'AMS" },  // STR_AMSV_NOT_AMS
+  { "Nicht ins AMS",                   "Not into the AMS",               "Pas dans l'AMS" },  // STR_AMSV_NOT_AMS
+  { "Spool-ID auf den Tag schreiben?", "Write the spool ID to the tag?",
+    "Écrire l'ID de bobine sur le tag ?" },  // STR_TW_CFS_SID_TITLE
+  { "Der Original-Tag trägt Crealitys Seriennummer statt der Spool-ID. Damit verknüpft CFSync die falsche Spule. Material und Farbe bleiben gleich.",
+    "The original tag carries Creality's serial instead of the spool ID, so CFSync links the wrong spool. Material and colour stay the same.",
+    "Le tag d'origine porte le numéro de Creality au lieu de l'ID de bobine, CFSync lie donc la mauvaise bobine. Matériau et couleur restent." },  // STR_TW_CFS_SID_HINT
 };
 
 StringID tagWriteResultString(uint8_t code) {
