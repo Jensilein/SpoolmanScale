@@ -6,6 +6,7 @@
 #include "app/app_state.h"
 #include "hardware/sd_logger.h"
 #include "services/auto_weight_state.h"
+#include "services/ams_presence.h"
 #include "services/backend_api.h"
 #include "services/server_reach.h"
 #include "services/location_state.h"
@@ -154,6 +155,23 @@ void amsPickShow() {
   if (!amsPickActive()) {
     amsPickDropPending();
     return;
+  }
+
+  // A spool that already has a bay is not asked about again: weighed and
+  // put back, it goes into the slot it came from. On 14.10.2026 every lift
+  // of spool 5 asked once more after it had been assigned. One that moves
+  // to another slot is reassigned with the AMS chip. When the bay cannot be
+  // looked up, the question is asked as before.
+  const int printer_id = amsPresencePrinterId();
+  if (printer_id > 0) {
+    int ams = -1, tray = -1;
+    const int code = backendFindSpoolSlot(s_pending.spool_id, printer_id, &ams, &tray, 6000);
+    if (code == 200 && ams >= 0) {
+      logSDf("AMSPICK: spool %d already sits in bay %d/%d, not asking",
+             s_pending.spool_id, ams, tray);
+      amsPickDropPending();
+      return;
+    }
   }
 
   openPicker();
