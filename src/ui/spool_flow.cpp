@@ -3907,6 +3907,15 @@ void showNewFromTagPopup() {
     int diff = (int)(netto > choices[i] ? netto - choices[i] : choices[i] - netto);
     if (best < 0 || diff < best) { best = diff; newtag_label_weight = choices[i]; }
   }
+  // A Creality tag states the nominal weight itself (its length field), and
+  // that beats a guess from the pad: there the empty spool is still in the
+  // gross, so a part used 500 g spool came out as 750 or 1000 g (14.10.2026,
+  // spool 13, then written back to its tags as 1 kg).
+  if (newtag_creality && g_tag.spool_weight > 0) {
+    for (int i = 0; i < NEWTAG_LABEL_COUNT; i++) {
+      if (choices[i] == (int)g_tag.spool_weight) { newtag_label_weight = choices[i]; break; }
+    }
+  }
 
   scr_newtag = lv_obj_create(lv_scr_act());
   lv_obj_set_size(scr_newtag, 480, 320);
