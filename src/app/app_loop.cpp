@@ -2193,17 +2193,22 @@ void appLoop() {
         }
         // A Creality tag the scales wrote themselves (its UID in the spool's
         // nfc_uid) whose spool has changed since - another colour, material
-        // or weight in Spoolman: offer to write it again. Once per placement;
-        // original and CFtag tags are only offered that after a link.
+        // or weight in Spoolman: offer to write it again. And an original tag
+        // that describes the spool's filament but carries Creality's serial
+        // instead of the spool id: offer to write the id, which is what
+        // CFSync links the CFS slot by. Once per placement; an original tag
+        // that describes another filament is only offered that after a link.
         if (creality_decoded && g_creality_tags && sm_found && sm_id > 0 &&
             strcmp(cfs_checked_uid, uid_str) != 0 && strcmp(g_tag.uid_str, uid_str) == 0 &&
             !lookupPending() && !isTagWritePopupOpen() && !isConfirmPopupOpen() &&
             !isSpoolFlowLinkEntryOpen() && !isSpoolFlowIdInputOpen() &&
             !isSecondTagPopupOpen() && strcmp(tagWriteState(), "pending") != 0) {
           snprintf(cfs_checked_uid, sizeof(cfs_checked_uid), "%s", uid_str);
-          bool own = false, differs = false;
-          if (tagCrealityCheck(sm_id, uid_str, &own, &differs) && own && differs)
-            showTagWriteAskPopupFmt(sm_id, TAG_FMT_CREALITY, 1);
+          bool own = false, differs = false, serial_only = false;
+          if (tagCrealityCheck(sm_id, uid_str, &own, &differs, &serial_only) && differs) {
+            if (own)              showTagWriteAskPopupFmt(sm_id, TAG_FMT_CREALITY, 1);
+            else if (serial_only) showTagWriteAskPopupFmt(sm_id, TAG_FMT_CREALITY, 3);
+          }
         }
       } else if (found && uidLen == 7) {
         // ── NTAG detected ──────────────────────────────────────
