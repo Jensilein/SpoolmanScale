@@ -316,6 +316,8 @@ void showTagWriteAskPopupFmt(int spool_id, uint8_t fmt, uint8_t variant) {
     buildAsk(STR_TW_CFS_UPD_TITLE, STR_TW_CFS_UPD_HINT, STR_TW_BTN_REWRITE, STR_TW_BTN_SKIP);
   else if (fmt == TAG_FMT_CREALITY && variant == 2)
     buildAsk(STR_TW_CFS_OVR_TITLE, STR_TW_CFS_OVR_HINT, STR_TW_BTN_REWRITE, STR_TW_BTN_SKIP);
+  else if (fmt == TAG_FMT_CREALITY && variant == 3)
+    buildAsk(STR_TW_CFS_SID_TITLE, STR_TW_CFS_SID_HINT, STR_TW_BTN_REWRITE, STR_TW_BTN_SKIP);
   else if (fmt == TAG_FMT_CREALITY)
     buildAsk(STR_TW_CFS_ASK_TITLE, STR_TW_CFS_ASK_HINT, STR_TW_BTN_WRITE, STR_TW_BTN_SKIP);
   else

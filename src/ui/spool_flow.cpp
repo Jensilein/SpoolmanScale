@@ -3964,9 +3964,9 @@ void handleSpoolFlowDeferredActions() {
     // A CFS write is always asked: it changes the tag's keys for good.
     if (tagwrite_after_link_fmt == TAG_FMT_CREALITY && tagwrite_after_link_check) {
       tagwrite_after_link_check = false;
-      bool own = false, differs = false;
-      if (tagCrealityCheck(id, g_tag.uid_str, &own, &differs) && differs)
-        showTagWriteAskPopupFmt(id, TAG_FMT_CREALITY, own ? 1 : 2);
+      bool own = false, differs = false, serial_only = false;
+      if (tagCrealityCheck(id, g_tag.uid_str, &own, &differs, &serial_only) && differs)
+        showTagWriteAskPopupFmt(id, TAG_FMT_CREALITY, own ? 1 : (serial_only ? 3 : 2));
     }
     else if (tagwrite_after_link_fmt == TAG_FMT_CREALITY)  showTagWriteAskPopupFmt(id, TAG_FMT_CREALITY);
     else if (g_tagwrite_mode == TAGWRITE_ALWAYS)      startTagWriteNoAsk(id);

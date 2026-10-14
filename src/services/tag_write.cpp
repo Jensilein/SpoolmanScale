@@ -1461,9 +1461,11 @@ static bool crealityRecordFor(JsonObjectConst sp, int spool_id, char rec[41]) {
   return crealityBuildRecord(in, rec);
 }
 
-bool tagCrealityCheck(int spool_id, const char* uid_str, bool* own, bool* differs) {
+bool tagCrealityCheck(int spool_id, const char* uid_str, bool* own, bool* differs,
+                      bool* serial_only) {
   *own = false;
   *differs = false;
+  if (serial_only) *serial_only = false;
   unsigned b[4];
   if (!uid_str || sscanf(uid_str, "%2x:%2x:%2x:%2x", &b[0], &b[1], &b[2], &b[3]) != 4) return false;
   const uint8_t uid[4] = {(uint8_t)b[0], (uint8_t)b[1], (uint8_t)b[2], (uint8_t)b[3]};
@@ -1478,13 +1480,15 @@ bool tagCrealityCheck(int spool_id, const char* uid_str, bool* own, bool* differ
   nfcUidText(sp, list, sizeof(list));
   hex8Of(uid, hex);
   *own = nfcUidListHas(list, hex);
-  // Everything but the date: vendor, batch, filament, colour, length - and
-  // on a tag of ours the serial too, which is the spool id. An original tag
-  // carries Creality's own running number there, so a foreign tag that
-  // agrees on the filament is left alone: on 14.10.2026 every original
-  // Creality spool linked to a new spool was offered an overwrite for the
-  // serial alone.
-  *differs = memcmp(on_tag + 5, want + 5, *own ? 29 : 23) != 0;
+  // Everything but the date: vendor, batch, filament, colour, length and
+  // serial. The serial is the spool id on a tag a scale wrote; on an original
+  // Creality tag it is Creality's own number, 000001 on every spool seen so
+  // far - and CFSync takes the serial for the Spoolman spool id, so it linked
+  // spool 5's slot to spool 1 on 14.10.2026. serial_only tells that case
+  // apart: the filament agrees, only the id is missing.
+  *differs = memcmp(on_tag + 5, want + 5, 29) != 0;
+  const bool filament_same = memcmp(on_tag + 5, want + 5, 23) == 0;
+  if (serial_only) *serial_only = *differs && filament_same && !*own;
   logSDf("CFS check: %s spool %d, %s tag (nfc_uid '%s'), tag %.29s, Spoolman %.29s%s", uid_str,
          spool_id, *own ? "own" : "foreign", sp["extra"]["nfc_uid"].isNull() ? "<none>" : list,
          on_tag + 5, want + 5, *differs ? " - differs" : "");

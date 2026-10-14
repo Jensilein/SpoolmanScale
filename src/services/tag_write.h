@@ -75,7 +75,11 @@ void tagWriteCfsTarget(const char* uid_str, void (*wait)(int phase), bool overwr
 // so a scale wrote it. differs: anything but the date is different. False
 // when it could not be decided (no record for that UID, spool not fetched).
 // Fetches the spool: loop task only.
-bool tagCrealityCheck(int spool_id, const char* uid_str, bool* own, bool* differs);
+// serial_only: a foreign tag that describes the same filament and lacks only
+// the spool id in its serial - an original Creality tag on a spool that is
+// now in Spoolman. CFSync needs the id there to link the CFS slot.
+bool tagCrealityCheck(int spool_id, const char* uid_str, bool* own, bool* differs,
+                      bool* serial_only = nullptr);
 
 // Parks a request. The write itself runs in tagWriteTick(), because the NFC
 // bus belongs to the loop task and the HTTP handler is not on it.
