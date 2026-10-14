@@ -1478,8 +1478,13 @@ bool tagCrealityCheck(int spool_id, const char* uid_str, bool* own, bool* differ
   nfcUidText(sp, list, sizeof(list));
   hex8Of(uid, hex);
   *own = nfcUidListHas(list, hex);
-  // Everything but the date: vendor, batch, filament, colour, length, serial.
-  *differs = memcmp(on_tag + 5, want + 5, 29) != 0;
+  // Everything but the date: vendor, batch, filament, colour, length - and
+  // on a tag of ours the serial too, which is the spool id. An original tag
+  // carries Creality's own running number there, so a foreign tag that
+  // agrees on the filament is left alone: on 14.10.2026 every original
+  // Creality spool linked to a new spool was offered an overwrite for the
+  // serial alone.
+  *differs = memcmp(on_tag + 5, want + 5, *own ? 29 : 23) != 0;
   logSDf("CFS check: %s spool %d, %s tag (nfc_uid '%s'), tag %.29s, Spoolman %.29s%s", uid_str,
          spool_id, *own ? "own" : "foreign", sp["extra"]["nfc_uid"].isNull() ? "<none>" : list,
          on_tag + 5, want + 5, *differs ? " - differs" : "");
