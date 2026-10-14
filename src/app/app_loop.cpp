@@ -1064,6 +1064,12 @@ void appLoop() {
   // typed in takes the entry down unsaved first, and is asked about after.
   tareEntryTick();
   if (!tag_present && weightSaysSpoolGone()) loc_left_pad = true;
+  // The bay question is coming: say so the moment the weight leaves the pad,
+  // not two seconds later when the page stands.
+  if (g_scale_fitted && amsPickHasPending() && amsPickPendingSpoolId() == sm_id &&
+      weightSaysSpoolGone() && !amsPickHintUp() && !uiModalWaiting() && !isAmsViewOpen()) {
+    amsPickHintShow();
+  }
   // Debounced popups after a removal, cross-checked against the scale.
   // The AMS question and the location question hang off the same event, so
   // the verdict is worked out once and the AMS side gets it first: a spool
@@ -1143,6 +1149,9 @@ void appLoop() {
              pick_popup_pending_id);
       pick_popup_pending_id = -1;
     }
+    // Put back down: no question, so no "loading" either. Not while the tag
+    // still answers on its way up - the weight decides that.
+    if (amsPickHintUp() && !weightSaysSpoolGone()) amsPickHintHide();
   }
 
   // ── FilaMan remote link ──────────────────────────────────

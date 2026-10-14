@@ -50,6 +50,13 @@ void amsPickShow();
 // or not the removal question is switched on - the tap is the question.
 void amsPickOpenFor(int spool_id, const char* spool_name);
 
+// "Loading AMS bays" from the lift until the question stands. Show is called
+// from appLoop() when the weight leaves the pad of a noted spool; every exit
+// of amsPickShow() and a timeout in amsPickTick() take it down.
+void amsPickHintShow();
+void amsPickHintHide();
+bool amsPickHintUp();
+
 // Drops a note nobody acted on. Called from appLoop().
 void amsPickTick();
 

@@ -14,6 +14,7 @@
 #include "services/user_options.h"
 #include "ui/ams_view.h"
 #include "ui/info_popup.h"
+#include "ui/loading_overlay.h"
 #include "ui/more_info_screen.h"
 
 #include "lang.h"
@@ -56,6 +57,14 @@ const uint8_t       kRecheckRounds = sizeof(kRecheckAtMs) / sizeof(kRecheckAtMs[
 // Big enough to stay off the loop task's stack.
 AmsSlotState s_recheck_state;
 
+// "Loading AMS bays" from the moment the weight leaves the pad until the
+// question stands. Lifting, the two removal checks and the requests to
+// BamBuddy and Spoolman take about two seconds, and a blank screen in that
+// time looked like nothing had happened (14.10.2026).
+bool          s_hint_up = false;
+unsigned long s_hint_ms = 0;
+const unsigned long kHintMaxMs = 6000;
+
 }  // namespace
 
 bool amsPickActive() {
@@ -84,6 +93,17 @@ void amsPickNote(int spool_id, const char* spool_name) {
     logSDf("AMSPICK: spool %d carries a Bambu tag, BamBuddy assigns it by itself - not asking",
            spool_id);
     return;
+  }
+  // A spool that already has a bay is not noted at all, so lifting it shows
+  // no "loading" either. amsPickShow() asks once more at the lift, because
+  // the bay can have been released in between.
+  const int printer_id = amsPresencePrinterId();
+  if (printer_id > 0) {
+    int ams = -1, tray = -1;
+    if (backendFindSpoolSlot(spool_id, printer_id, &ams, &tray, 4000) == 200 && ams >= 0) {
+      logSDf("AMSPICK: spool %d sits in bay %d/%d, no question on the lift", spool_id, ams, tray);
+      return;
+    }
   }
   notePending(spool_id, spool_name);
 }
@@ -193,17 +213,35 @@ static void onPicked(int ams_id, int tray_id) {
 static void openPicker() {
   char fmt[48], head[80];
   copyT(fmt, sizeof(fmt), STR_AMSV_PICK_HEAD);
+  // The page takes over from here; its own status line says when it loads.
+  amsPickHintHide();
   snprintf(head, sizeof(head), fmt,
            s_pending.name[0] ? s_pending.name : "");
   requestAmsView(AMS_VIEW_PICK, onPicked, head);
 }
 
+void amsPickHintShow() {
+  if (s_hint_up) return;
+  s_hint_up = true;
+  s_hint_ms = millis();
+  loadingOverlayShow(T(STR_AMSPICK_LOADING));
+}
+
+void amsPickHintHide() {
+  if (!s_hint_up) return;
+  s_hint_up = false;
+  loadingOverlayHide();
+}
+
+bool amsPickHintUp() { return s_hint_up; }
+
 void amsPickShow() {
-  if (!s_pending.active) return;
+  if (!s_pending.active) { amsPickHintHide(); return; }
   // A note taken under one backend can be asked about under another only if
   // that one can assign bays too, and the option is still on.
   if (!amsPickActive()) {
     amsPickDropPending();
+    amsPickHintHide();
     return;
   }
 
@@ -220,6 +258,7 @@ void amsPickShow() {
       logSDf("AMSPICK: spool %d already sits in bay %d/%d, not asking",
              s_pending.spool_id, ams, tray);
       amsPickDropPending();
+      amsPickHintHide();
       return;
     }
   }
@@ -235,6 +274,9 @@ void amsPickOpenFor(int spool_id, const char* spool_name) {
 }
 
 void amsPickTick() {
+  // Never left standing: a lift that turned out to be none, or a question
+  // that did not come, takes it down after a few seconds.
+  if (s_hint_up && (millis() - s_hint_ms > kHintMaxMs || isAmsViewOpen())) amsPickHintHide();
   if (!s_pending.active) return;
   if (isAmsViewOpen()) return;          // the question is on screen, let it stand
   if (amsPickPendingAgeMs() <= AMS_PICK_MAX_MS) return;

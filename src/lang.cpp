@@ -3262,6 +3262,7 @@ const char* const STRINGS[][3] = {
   { "Der Original-Tag trägt Crealitys Seriennummer statt der Spool-ID. Damit verknüpft CFSync die falsche Spule. Material und Farbe bleiben gleich.",
     "The original tag carries Creality's serial instead of the spool ID, so CFSync links the wrong spool. Material and colour stay the same.",
     "Le tag d'origine porte le numéro de Creality au lieu de l'ID de bobine, CFSync lie donc la mauvaise bobine. Matériau et couleur restent." },  // STR_TW_CFS_SID_HINT
+  { "AMS-Fächer werden geladen ...", "Loading AMS bays ...", "Chargement AMS ..." },  // STR_AMSPICK_LOADING
 };
 
 StringID tagWriteResultString(uint8_t code) {
