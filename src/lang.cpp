@@ -3903,15 +3903,15 @@ const char* const STRINGS[][3] = {
     "Lit les tags Creality CFS (K2 Plus, K2 Pro, K2 Max, Hi) : matériau, couleur et poids. Un tag de 4 octets inconnu est d'abord essayé comme tag Creality, puis comme tag Bambu. La balance retient pour chaque tag de quel type il est et le lit directement la fois suivante." },  // STR_W_CREALITY_HINT
   { "Kein leerer Tag. Er wurde nicht verändert.",
     "Not a blank tag. It was left as it is.",
-    "Ce n'est pas un tag vierge. Il n'a pas été modifié." },  // STR_TW_ERR_NOT_BLANK
+    "Tag non vierge. Il est resté tel quel." },  // STR_TW_ERR_NOT_BLANK
   { "Als CFS-Tag beschreiben?", "Write as a CFS tag?", "Écrire comme tag CFS ?" },  // STR_TW_CFS_ASK_TITLE
   { "Der leere Tag bekommt die Daten dieser Spule, damit das Creality CFS sie erkennt.",
     "The blank tag gets this spool's data, so the Creality CFS recognises it.",
-    "Le tag vierge reçoit les données de cette bobine, pour que le CFS Creality la reconnaisse." },  // STR_TW_CFS_ASK_HINT
+    "Le tag vierge reçoit les données de la bobine, que le CFS Creality reconnaîtra." },  // STR_TW_CFS_ASK_HINT
   { "Der Tag antwortet nicht. Spule kurz anheben und wieder genauso hinstellen.",
     "The tag does not answer. Lift the spool briefly and put it back the same way.",
-    "Le tag ne répond pas. Soulevez brièvement la bobine et reposez-la de la même façon." },  // STR_TW_CFS_REPLACE
-  { "CFS-Tag aktualisieren?", "Update the CFS tag?", "Mettre à jour le tag CFS ?" },  // STR_TW_CFS_UPD_TITLE
+    "Le tag ne répond pas. Soulevez un instant la bobine et reposez-la pareil." },  // STR_TW_CFS_REPLACE
+  { "CFS-Tag aktualisieren?", "Update the CFS tag?", "Actualiser le tag CFS ?" },  // STR_TW_CFS_UPD_TITLE
   { "In Spoolman stehen andere Daten als auf dem Tag. Er wird mit den aktuellen Daten neu beschrieben.",
     "Spoolman holds different data than the tag. It is written again with the current data.",
     "Spoolman contient d'autres données que le tag. Il est réécrit avec les données actuelles." },  // STR_TW_CFS_UPD_HINT
