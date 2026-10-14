@@ -324,6 +324,14 @@ void crealityFilamentIdFor(const char* vendor, const char* name, const char* mat
   for (const Brand* b = BRANDS; b->key && !id; b++) {
     if (v[0] && strstr(v, b->key)) {
       id = findProduct(b->table, name ? name : "");
+      // A name that leaves the material out or puts the colour first -
+      // "Gold Hyper" with material PLA, 14.10.2026 - still names the
+      // product once the material is behind it: "Gold Hyper PLA".
+      if (!id && name && *name && material && *material) {
+        char both[96];
+        snprintf(both, sizeof(both), "%s %s", name, material);
+        id = findProduct(b->table, both);
+      }
       if (!id) id = findProduct(b->table, material ? material : "");
       break;
     }
