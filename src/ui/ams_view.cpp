@@ -617,6 +617,14 @@ static void footCancelCb(lv_event_t* e) {
   s_close_pending = true;
 }
 
+// PICK: the spool is not going into the AMS at all - a K2 Plus with CFS, the
+// shelf. The same way out as Cancel, named for what it means, so the log
+// tells a deliberate "elsewhere" from a question that was let run out.
+static void footNotAmsCb(lv_event_t* e) {
+  logSD("AMSV: 'not into the AMS' tapped, no bay assigned");
+  s_close_pending = true;
+}
+
 // WINDOW: open FilaMan's assignment window. (0, 0) is the answer the
 // callback reads as "open"; the request itself runs one pass later, with
 // the page gone.
@@ -887,7 +895,7 @@ static void buildScreen() {
   if (s_mode == AMS_VIEW_PICK) {
     s_info_btn = footButton(240 - AMSV_FOOT_GAP / 2 - AMSV_FOOT_BTN_W,
                             STR_AMSV_INFO, false, footInfoCb);
-    addCancelFill(footButton(240 + AMSV_FOOT_GAP / 2, STR_CANCEL, false, footCancelCb));
+    addCancelFill(footButton(240 + AMSV_FOOT_GAP / 2, STR_AMSV_NOT_AMS, false, footNotAmsCb));
     applyInfoMode();
   } else if (s_mode == AMS_VIEW_WINDOW) {
     footButton(240 - AMSV_FOOT_GAP / 2 - AMSV_FOOT_BTN_W, STR_AMSV_BTN_WINDOW, true, footOpenCb);

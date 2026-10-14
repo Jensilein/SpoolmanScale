@@ -3256,6 +3256,7 @@ const char* const STRINGS[][3] = {
   { "BamBuddy nutzt einen anderen Spoolman",
     "BamBuddy uses another Spoolman",
     "BamBuddy, autre Spoolman" },  // STR_BBSIDE_ST_OTHER
+  { "Nicht ins AMS", "Not into the AMS", "Pas dans l'AMS" },  // STR_AMSV_NOT_AMS
 };
 
 StringID tagWriteResultString(uint8_t code) {
