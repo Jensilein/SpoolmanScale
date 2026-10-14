@@ -2204,7 +2204,7 @@ void appLoop() {
         // back, and a blank tag linked from Spoolman's web page. Only while
         // the tag answers right now and nothing else holds the screen.
         if (blank_mifare && g_creality_tags && sm_found && sm_id > 0 &&
-            strcmp(g_tag.uid_str, uid_str) == 0 &&
+            strcmp(g_tag.uid_str, uid_str) == 0 && lookupWasFor(uid_str) &&
             tagFamilyGet(uid) == TAG_FAMILY_BLANK && !tagCfsAskedFor(uid_str) &&
             !lookupPending() && !isTagWritePopupOpen() && !isConfirmPopupOpen() &&
             !isSpoolFlowLinkEntryOpen() && !isSpoolFlowIdInputOpen() &&
@@ -2220,9 +2220,13 @@ void appLoop() {
         // instead of the spool id: offer to write the id, which is what
         // CFSync links the CFS slot by. Once per placement; an original tag
         // that describes another filament is only offered that after a link.
+        // lookupWasFor(): sm_id must be this tag's spool. On 14.10.2026 the
+        // tag of spool 13 was compared with spool 12, which had been lifted a
+        // moment before - with two spools of one filament that would have
+        // offered to write 12's id onto 13's tag.
         if (creality_decoded && g_creality_tags && sm_found && sm_id > 0 &&
             strcmp(cfs_checked_uid, uid_str) != 0 && strcmp(g_tag.uid_str, uid_str) == 0 &&
-            !lookupPending() && !isTagWritePopupOpen() && !isConfirmPopupOpen() &&
+            lookupWasFor(uid_str) && !lookupPending() && !isTagWritePopupOpen() && !isConfirmPopupOpen() &&
             !isSpoolFlowLinkEntryOpen() && !isSpoolFlowIdInputOpen() &&
             !isSecondTagPopupOpen() && strcmp(tagWriteState(), "pending") != 0) {
           snprintf(cfs_checked_uid, sizeof(cfs_checked_uid), "%s", uid_str);
