@@ -1437,6 +1437,50 @@ static void nfcUidAdd(int spool_id, JsonObjectConst sp, const uint8_t uid[4]) {
          (code >= 200 && code < 300) ? "added to" : "could not be added to", spool_id, code);
 }
 
+// Takes a UID out of the spool's nfc_uid list again, or empties it (all).
+// An unlink has to: the lookup also searches every extra field, so a UID left
+// in nfc_uid brought spool 9 straight back on 14.10.2026 ("Auto-link") a
+// second after "Alle lösen". Spoolman only.
+void tagNfcUidForget(int spool_id, const char* uid, bool all) {
+  if (backendMode() != BACKEND_SPOOLMAN || spool_id <= 0) return;
+  JsonDocument doc;
+  if (backendGetSpoolJson(backendBaseUrl(), spool_id, doc) != 200 || doc.isNull()) return;
+  char list[160];
+  nfcUidText(doc.as<JsonObjectConst>(), list, sizeof(list));
+  if (!list[0]) return;
+
+  // The UID as the list holds it: hex digits only, upper case.
+  char hex[24];
+  size_t h = 0;
+  for (const char* p = uid ? uid : ""; *p && h < sizeof(hex) - 1; p++)
+    if (isxdigit((unsigned char)*p)) hex[h++] = (char)toupper((unsigned char)*p);
+  hex[h] = '\0';
+
+  char rest[160];
+  rest[0] = '\0';
+  if (!all) {
+    if (!h || !nfcUidListHas(list, hex)) return;
+    char tok[24];
+    size_t t = 0;
+    for (const char* p = list; ; p++) {
+      const char c = *p;
+      if (c == '\0' || c == ',' || c == ';' || c == '/' || c == '|' || c == '\n') {
+        tok[t] = '\0';
+        if (t && strcmp(tok, hex) != 0) {
+          const size_t r = strlen(rest);
+          snprintf(rest + r, sizeof(rest) - r, "%s%s", r ? ", " : "", tok);
+        }
+        t = 0;
+        if (c == '\0') break;
+      } else if (isxdigit((unsigned char)c) && t < sizeof(tok) - 1) {
+        tok[t++] = (char)toupper((unsigned char)c);
+      }
+    }
+  }
+  const int code = spoolmanPatchExtraField(backendBaseUrl(), spool_id, "nfc_uid", rest);
+  logSDf("UNLINK ID=%d nfc_uid '%s' -> '%s' HTTP %d", spool_id, list, rest, code);
+}
+
 // The Creality record the spool stands for right now.
 static bool crealityRecordFor(JsonObjectConst sp, int spool_id, char rec[41]) {
   CrealityRecordIn in;

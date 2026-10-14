@@ -81,6 +81,10 @@ void tagWriteCfsTarget(const char* uid_str, void (*wait)(int phase), bool overwr
 bool tagCrealityCheck(int spool_id, const char* uid_str, bool* own, bool* differs,
                       bool* serial_only = nullptr);
 
+// Takes uid out of the spool's nfc_uid list, or empties the list (all).
+// Part of an unlink. Fetches the spool: loop task only.
+void tagNfcUidForget(int spool_id, const char* uid, bool all);
+
 // Parks a request. The write itself runs in tagWriteTick(), because the NFC
 // bus belongs to the loop task and the HTTP handler is not on it.
 // link also writes the tag's UID onto the spool record, so presenting it
