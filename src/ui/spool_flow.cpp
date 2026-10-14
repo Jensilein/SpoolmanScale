@@ -3777,9 +3777,14 @@ void closeNewTagPopup() {
   for (int i = 0; i < NEWTAG_LABEL_COUNT; i++) btn_newtag_w[i] = nullptr;
 }
 
-// Net filament on the pad, measured against the assumed Bambu core.
+// Net filament on the pad, measured against the assumed Bambu core. A
+// Creality spool's empty weight is not known here (the spool goes to
+// Spoolman without one), so nothing is taken off: the next weighing does
+// that with the empty weight Spoolman then knows. Taking Bambu's 250 g off
+// created spool 5 with 149 g on 14.10.2026, the weighing a moment later
+// said 400 g.
 static float newTagNetto() {
-  float netto = scale_weight_g - (float)BAMBU_CORE_WEIGHT_G;
+  float netto = scale_weight_g - (newtag_creality ? 0.0f : (float)BAMBU_CORE_WEIGHT_G);
   return netto < 0 ? 0 : netto;
 }
 
