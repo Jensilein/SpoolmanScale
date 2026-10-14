@@ -1535,7 +1535,8 @@ enum StringID {
   STR_AMSV_NOT_AMS,
   STR_TW_CFS_SID_TITLE,
   STR_TW_CFS_SID_HINT,
-  STR_AMSPICK_LOADING,         // shown from the lift until the bay question stands
+  STR_AMSPICK_LOADING,
+  STR_AMSV_LAST_HERE,          // second line of the bay a spool sat in last         // shown from the lift until the bay question stands
 
   STR_COUNT
 };

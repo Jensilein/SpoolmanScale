@@ -47,6 +47,11 @@ void requestAmsView(AmsViewMode mode, AmsPickCb cb = nullptr,
 // rather than to the main screen, because that is where it was opened.
 void requestAmsViewFromScaleMenu();
 
+// The bay the spool in question sat in last, marked on the next PICK page so
+// putting it back is one tap on the obvious tile. -1 for none. Forgotten when
+// the page closes.
+void amsViewSetLastBay(int ams_id, int tray_id);
+
 // Runs the parked work: build, fetch, redraw, close. Called from appLoop().
 void handleAmsViewDeferredActions();
 

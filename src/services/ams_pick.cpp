@@ -11,6 +11,7 @@
 #include "services/server_reach.h"
 #include "services/tag_field.h"
 #include "services/location_state.h"
+#include "services/prefs_store.h"
 #include "services/user_options.h"
 #include "ui/ams_view.h"
 #include "ui/info_popup.h"
@@ -67,6 +68,9 @@ const unsigned long kHintMaxMs = 6000;
 
 }  // namespace
 
+static void rememberBay(int spool_id, int ams, int tray);
+static bool lastBay(int spool_id, int* ams, int* tray);
+
 bool amsPickActive() {
   return g_ams_pick_ask && backendCanAssignAmsSlot();
 }
@@ -102,6 +106,7 @@ void amsPickNote(int spool_id, const char* spool_name) {
     int ams = -1, tray = -1;
     if (backendFindSpoolSlot(spool_id, printer_id, &ams, &tray, 4000) == 200 && ams >= 0) {
       logSDf("AMSPICK: spool %d sits in bay %d/%d, no question on the lift", spool_id, ams, tray);
+      rememberBay(spool_id, ams, tray);
       return;
     }
   }
@@ -187,6 +192,7 @@ static void onPicked(int ams_id, int tray_id) {
     const bool moved = (was_ams >= 0 && (was_ams != ams_id || was_tray != tray_id));
     logSDf("AMSPICK: spool %d -> printer %d bay %d/%d (%s)",
            spool_id, printer_id, ams_id, tray_id, moved ? "moved" : "new");
+    rememberBay(spool_id, ams_id, tray_id);
     s_recheck.active     = true;
     s_recheck.spool_id   = spool_id;
     s_recheck.printer_id = printer_id;
@@ -218,6 +224,32 @@ static void openPicker() {
   snprintf(head, sizeof(head), fmt,
            s_pending.name[0] ? s_pending.name : "");
   requestAmsView(AMS_VIEW_PICK, onPicked, head);
+  int last_ams = -1, last_tray = -1;
+  if (lastBay(s_pending.spool_id, &last_ams, &last_tray)) {
+    logSDf("AMSPICK: spool %d sat in bay %d/%d last, marked", s_pending.spool_id, last_ams, last_tray);
+    amsViewSetLastBay(last_ams, last_tray);
+  }
+}
+
+// The bay a spool sat in last, kept across restarts: one small key per spool
+// ("lb" + id), ams * 16 + tray + 1, 0 for none. Written whenever the scale
+// learns where a spool is - an assignment from here, or one it finds on file.
+static void rememberBay(int spool_id, int ams, int tray) {
+  if (spool_id <= 0 || ams < 0 || tray < 0) return;
+  char key[16];
+  snprintf(key, sizeof(key), "lb%d", spool_id);
+  const int v = ams * 16 + tray + 1;
+  if (prefsGetInt(key, 0) != v) prefsPutInt(key, v);
+}
+
+static bool lastBay(int spool_id, int* ams, int* tray) {
+  char key[16];
+  snprintf(key, sizeof(key), "lb%d", spool_id);
+  const int v = prefsGetInt(key, 0);
+  if (v <= 0) return false;
+  *ams  = (v - 1) / 16;
+  *tray = (v - 1) % 16;
+  return true;
 }
 
 void amsPickHintShow() {
@@ -257,6 +289,7 @@ void amsPickShow() {
     if (code == 200 && ams >= 0) {
       logSDf("AMSPICK: spool %d already sits in bay %d/%d, not asking",
              s_pending.spool_id, ams, tray);
+      rememberBay(s_pending.spool_id, ams, tray);
       amsPickDropPending();
       amsPickHintHide();
       return;

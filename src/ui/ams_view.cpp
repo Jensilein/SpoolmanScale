@@ -120,6 +120,9 @@ static char         s_headline[AMSV_HEADLINE_MAX] = "";
 static AmsSlotState s_state;
 
 static bool s_build_pending = false;
+// The bay to mark with "last here" on a PICK page, see amsViewSetLastBay().
+static int  s_last_ams  = -1;
+static int  s_last_tray = -1;
 static bool s_fetch_pending = false;
 // Weights came in while the detail card stood over the grid. Drawn as soon
 // as the card is gone; without this they would wait for the next fetch.
@@ -170,6 +173,9 @@ static bool s_return_to_scale_menu = false;
 
 void requestAmsView(AmsViewMode mode, AmsPickCb cb, const char* headline) {
   s_mode = mode;
+  // A fresh page marks nothing until its caller says otherwise.
+  s_last_ams  = -1;
+  s_last_tray = -1;
   s_cb   = cb;
   s_headline[0] = '\0';
   if (headline) snprintf(s_headline, sizeof(s_headline), "%s", headline);
@@ -202,6 +208,11 @@ void requestAmsViewFromScaleMenu() {
 }
 
 bool isAmsViewOpen() { return s_scr != nullptr; }
+
+void amsViewSetLastBay(int ams_id, int tray_id) {
+  s_last_ams  = ams_id;
+  s_last_tray = tray_id;
+}
 
 bool amsViewLoading() { return s_scr != nullptr && (s_build_pending || s_fetch_pending); }
 
@@ -411,9 +422,14 @@ static lv_obj_t* buildTile(lv_obj_t* parent, const AmsSlotUnit& unit,
   // The loaded bay is the one thing on this page that says "this is printing
   // right now", so it gets the accent border rather than a colour change.
   const bool active = tray.active;
-  lv_obj_set_style_border_width(tile, active ? 2 : 1, 0);
+  // Where the spool in question sat last: a thick warm frame, and a second
+  // line on the tile once the bay is empty. The obvious answer when a spool
+  // was only taken out to be weighed.
+  const bool last_here = (s_mode == AMS_VIEW_PICK && s_last_ams >= 0 &&
+                          unit.ams_id == s_last_ams && tray.tray_id == s_last_tray);
+  lv_obj_set_style_border_width(tile, last_here ? 3 : (active ? 2 : 1), 0);
   lv_obj_set_style_border_color(tile,
-    lv_color_hex(active ? AMSV_COL_ACCENT : AMSV_COL_LINE), 0);
+    lv_color_hex(last_here ? AMSV_COL_WARM : (active ? AMSV_COL_ACCENT : AMSV_COL_LINE)), 0);
 
   uint32_t text_col;
   if (!filled) {
@@ -441,6 +457,10 @@ static lv_obj_t* buildTile(lv_obj_t* parent, const AmsSlotUnit& unit,
     // difference between "nothing in here" and "something with no data"
     // should stay visible at a glance.
     copyT(line, sizeof(line), STR_AMSV_EMPTY);
+    if (last_here) {
+      strncat(line, "\n", sizeof(line) - strlen(line) - 1);
+      strncat(line, T(STR_AMSV_LAST_HERE), sizeof(line) - strlen(line) - 1);
+    }
   } else {
     char name[AMS_NAME_MAX];
     strncpy(name, tray.name[0] ? tray.name : T(STR_AMSV_EMPTY), sizeof(name) - 1);
