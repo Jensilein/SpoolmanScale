@@ -438,10 +438,20 @@ int spoolmanCreateSpool(const char* base_url, int filament_id, float initial_wei
   http.addHeader("Content-Type", "application/json");
   http.setTimeout(timeout_ms);
 
+  // spool_weight only when known: a 0 written here sits on the spool as a real
+  // value and outranks the filament's and the vendor's empty weight for every
+  // reader that takes 0 at face value (the FilaStation scale before v3.10,
+  // Spoolman's own measure endpoint). Left out, the chain falls through.
   char body[256];
-  snprintf(body, sizeof(body),
-    "{\"filament_id\":%d,\"initial_weight\":%.0f,\"spool_weight\":%.0f,\"remaining_weight\":%.0f}",
-    filament_id, initial_weight, spool_weight, remaining_weight);
+  if (spool_weight > 0) {
+    snprintf(body, sizeof(body),
+      "{\"filament_id\":%d,\"initial_weight\":%.0f,\"spool_weight\":%.0f,\"remaining_weight\":%.0f}",
+      filament_id, initial_weight, spool_weight, remaining_weight);
+  } else {
+    snprintf(body, sizeof(body),
+      "{\"filament_id\":%d,\"initial_weight\":%.0f,\"remaining_weight\":%.0f}",
+      filament_id, initial_weight, remaining_weight);
+  }
   int code = http.POST(body);
   if ((code == 200 || code == 201) && out_spool_id) {
     JsonDocument doc;
