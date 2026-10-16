@@ -346,7 +346,20 @@ void crealityFilamentIdFor(const char* vendor, const char* name, const char* mat
     }
   }
   if (!id) id = findProduct(CREALITY_PRODUCTS, material ? material : "");
-  if (!id) id = findGeneric(material);
+  if (!id) {
+    id = findGeneric(material);
+    // Spoolman's material field says only "PLA" for a silk filament, so the
+    // printer picked the plain PLA profile for "Silk PLA Lila". When the
+    // material is plain PLA, the name may narrow it to Generic PLA-Silk.
+    // Nothing else is taken from the name: "Matte PLA" with material PETG
+    // stays PETG. waage.py on the FilaStation does the same, or each scale
+    // would rewrite the other's tags.
+    if (id && strcmp(id, "00001") == 0 && name && *name) {
+      const char* by_name = findGeneric(name);
+      char n[96]; normName(name, n, sizeof(n));
+      if ((by_name && strcmp(by_name, "00002") == 0) || strstr(n, "SILK")) id = "00002";
+    }
+  }
   if (!id) id = findGeneric(name);
   if (!id) id = "00001";
   snprintf(out, 7, "1%s", id);
