@@ -102,6 +102,19 @@ void joinMaterialName(const char* material, const char* name, char* out, size_t 
   if (!name) name = "";
   if (!material) material = "";
   if (nameStartsWithMaterial(name, material)) { snprintf(out, out_size, "%s", name); return; }
+  // The material anywhere in the name as a whole word: product names carry
+  // it in the middle - "Hyper PLA Gelb", "Silk PLA Weiss", "High Speed Matte
+  // PLA" - and read "PLA Hyper PLA Gelb" with the material put in front.
+  {
+    const size_t ml = strlen(material);
+    for (const char* q = name; ml && *q; q++) {
+      if (strncasecmp(q, material, ml) != 0) continue;
+      const bool start_ok = (q == name) || q[-1] == ' ' || q[-1] == '-';
+      const char e = q[ml];
+      const bool end_ok = e == '\0' || e == ' ' || e == '-' || e == '+';
+      if (start_ok && end_ok) { snprintf(out, out_size, "%s", name); return; }
+    }
+  }
   for (const char* p = strchr(material, ' '); p; p = strchr(p + 1, ' ')) {
     const char* tail = p + 1;
     const size_t n = strlen(tail);
@@ -1281,7 +1294,8 @@ static void fetchSpoolSummary(int spool_id, SpoolSummary &out) {
   const char* material = f["material"]       | "";
   const char* name     = f["name"]           | "";
   const char* color    = f["color_hex"]      | "";
-  snprintf(out.text, sizeof(out.text), "#%d  %s %s  %s", spool_id, vendor, material, name);
+  char joined[64]; joinMaterialName(material, name, joined, sizeof(joined));
+  snprintf(out.text, sizeof(out.text), "#%d  %s  %s", spool_id, vendor, joined);
   snprintf(out.color, sizeof(out.color), "%s", color);
 }
 
@@ -2448,12 +2462,8 @@ static void linkCopyConfirmFromRow(int cidx) {
   copy_confirm_initial = cs.total;
   copy_confirm_spool_w = cs.spool_weight;
   {
-    bool nm = (cs.material[0] && cs.name[0] &&
-               strncasecmp(cs.name, cs.material, strlen(cs.material)) == 0);
-    if (nm)
-      snprintf(copy_confirm_name, sizeof(copy_confirm_name), "%s (%s)", cs.name, cs.vendor);
-    else
-      snprintf(copy_confirm_name, sizeof(copy_confirm_name), "%s %s (%s)", cs.material, cs.name, cs.vendor);
+    char joined[96]; joinMaterialName(cs.material, cs.name, joined, sizeof(joined));
+    snprintf(copy_confirm_name, sizeof(copy_confirm_name), "%s (%s)", joined, cs.vendor);
   }
   copyLookFromRow(copy_confirm_look, cs);
   copy_confirm_pending = true;
