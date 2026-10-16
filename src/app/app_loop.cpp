@@ -1536,6 +1536,20 @@ void appLoop() {
         auto_weight_stable_ms = millis();
         aw_last_shown_s = -1;
       } else if (auto_weight_stable_ms > 0 &&
+                 millis() - auto_weight_stable_ms >= AUTO_WEIGHT_STABLE_MS &&
+                 cur < fmaxf(20.0f, (float)sm_spool_weight - 15.0f)) {
+        // A tag held to the reader without its spool - a loose sticker, a
+        // spool tilted off the pad - reads as present over an empty pad, and
+        // used to file the spool as 0 g (16.10.2026, spool 27). Less than the
+        // empty spool is no spool at all: wait for a real weight instead.
+        static int aw_low_logged_id = 0;
+        if (aw_low_logged_id != sm_id) {
+          logSDf("Auto weight: %.0fg is below the empty spool (%dg) - spool %d not on the pad, nothing written",
+                 cur, (int)sm_spool_weight, sm_id);
+          aw_low_logged_id = sm_id;
+        }
+        auto_weight_stable_ms = millis();
+      } else if (auto_weight_stable_ms > 0 &&
                  millis() - auto_weight_stable_ms >= AUTO_WEIGHT_STABLE_MS) {
         // 3 Sekunden stabil -> einmalig speichern
         aw_done = true;
