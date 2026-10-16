@@ -1620,6 +1620,20 @@ void appLoop() {
         auto_weight_last_val = cur;
         auto_weight_stable_ms = now;
         if (weightButtonLook() == WL_COUNTING) weightButtonIdle();
+      } else if (cur < fmaxf(20.0f, (float)sm_spool_weight - 15.0f)) {
+        // A tag held to the reader without its spool - a loose sticker, a
+        // spool tilted off the pad - reads as present over an empty pad, and
+        // used to file the spool as 0 g (16.10.2026, spool 27). Less than the
+        // empty spool is no spool at all: no countdown, nothing written, wait
+        // for a real weight. A spool weighed empty still reads near its tare.
+        static int aw_low_logged_id = 0;
+        if (aw_low_logged_id != sm_id) {
+          logSDf("Auto-Weight: %.0f g is below the empty spool (%d g) - spool %d not on the pad, nothing written",
+                 cur, (int)sm_spool_weight, sm_id);
+          aw_low_logged_id = sm_id;
+        }
+        auto_weight_stable_ms = now;
+        if (weightButtonLook() == WL_COUNTING) weightButtonIdle();
       } else {
         const unsigned long still_ms = now - auto_weight_stable_ms;
         if (still_ms >= AUTO_WEIGHT_QUIET_MS + AUTO_WEIGHT_STABLE_MS) {
