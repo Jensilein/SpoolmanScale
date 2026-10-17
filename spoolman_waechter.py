@@ -29,7 +29,8 @@ kommt zusaetzlich eine Meldung, wenn sie wieder laufen.
 Aufruf:   python3 spoolman_waechter.py          pruefen und melden
           python3 spoolman_waechter.py --test   alles anzeigen, nichts senden, nichts merken
           python3 spoolman_waechter.py --testmail  eine Testmail schicken
-Einstellungen: spoolman_waechter.json im Ordner $FT_DIR (Standard: Home), beim ersten Lauf angelegt
+Einstellungen: spoolman_waechter.json im Ordner $FT_DIR (Standard: Home), beim ersten Lauf angelegt;
+               E-Mail wahlweise in mail.json im selben Ordner
                Pushover aus spoolman_waechter.json oder waage_config.json, Adressen aus ort_sync.json
 """
 import html
@@ -350,6 +351,14 @@ def main():
 
     cfg = dict(DEFAULTS)
     cfg.update(load_json(CFG_PATH, {}))
+    # Mail-Einstellungen duerfen auch in einer eigenen Datei mail.json stehen
+    # (dann muss spoolman_waechter.json nicht von Hand bearbeitet werden)
+    mail_extra = load_json(os.path.join(HOME, "mail.json"), {})
+    if mail_extra:
+        cfg.update(mail_extra)
+        cfg.setdefault("mail_aktiv", True)
+        if "mail_aktiv" not in mail_extra:
+            cfg["mail_aktiv"] = True
     if not cfg.get("pruefen_ab"):
         cfg["pruefen_ab"] = date.today().isoformat()
     if not os.path.exists(CFG_PATH) and not test:
