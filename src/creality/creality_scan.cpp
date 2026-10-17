@@ -193,6 +193,20 @@ static bool blockIsBlank(const uint8_t b[16]) {
   return true;
 }
 
+// Blocks 4-6 once sector 1 is open: 1 all blank, 0 data in them, -1 a read
+// failed. A sticker on the edge of the field can hand back a block that is
+// not what it holds (17.10.2026, 6D:7B:DB:4F: "holds data" once, blank half
+// a minute later, never written in between), so "data" is only believed
+// once a second read after a fresh wake says the same.
+static int readSector1(uint8_t blk[3][16]) {
+  int r = 1;
+  for (int b = 0; b < 3; b++) {
+    if (!nfcReadMifareBlock(4 + b, blk[b])) return -1;
+    if (!blockIsBlank(blk[b])) r = 0;
+  }
+  return r;
+}
+
 // Polls for the card the write is meant for. Plain polls only: a card that
 // was just put down answers them, and nothing else touches it meanwhile.
 static bool waitForCard(uint8_t uid[NFC_UID_MAX], uint8_t* uid_len,
@@ -409,20 +423,28 @@ CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4],
   }
 
   uint8_t old[3][16];
-  bool has_data = false;
-  for (int b = 0; b < 3; b++) {
-    if (!nfcReadMifareBlock(4 + b, old[b])) {
-      logSDf("CFS write: %s block %d unreadable - not written", uid_str, 4 + b);
-      wakeCard(uid, uid_str, &silent);
-      return CREALITY_WRITE_FAILED;
+  int st = readSector1(old);
+  CrealityTag t;
+  if (st == 0 && !crealityDecode(old, &t)) {
+    // Data that is no CFS record: read it once more after a fresh wake
+    // before refusing (see readSector1).
+    if (wakeCard(uid, uid_str, &silent) && !silent &&
+        nfcAuthMifareSector(1, FACTORY_KEY, uid, NFC_KEY_A)) {
+      st = readSector1(old);
+      if (st == 1) logSDf("CFS write: %s read as holding data, blank on the second read - writing", uid_str);
+    } else {
+      st = -1;
     }
-    if (!blockIsBlank(old[b])) has_data = true;
   }
-  if (has_data) {
+  if (st < 0) {
+    logSDf("CFS write: %s sector 1 unreadable - not written", uid_str);
+    wakeCard(uid, uid_str, &silent);
+    return CREALITY_WRITE_FAILED;
+  }
+  if (st == 0) {
     // Only a CFS record still on the factory key may be written over: an
     // earlier write of ours that stopped before the trailer (see
     // crealityProbeFactory). Anything else stays untouched.
-    CrealityTag t;
     if (!crealityDecode(old, &t)) {
       logSDf("CFS write: %s sector 1 holds data - not written", uid_str);
       wakeCard(uid, uid_str, &silent);
@@ -490,28 +512,30 @@ int crealityProbeFactory(const uint8_t uid[4], const char* uid_str) {
   // blank sticker, half off the reader after the refused Creality key,
   // opened and then read nothing, and went to the Bambu probe as "holds
   // data"). So a failed read gets one more go after a wake.
-  int data = -1;   // -1 unread, 0 holds data, 1 blank
-  uint8_t blk[3][16];
-  for (int attempt = 0; attempt < 2 && data < 0; attempt++) {
-    if (attempt > 0) {
-      if (!wakeCard(uid, uid_str, &silent) ||
-          !nfcAuthMifareSector(1, FACTORY_KEY, uid, NFC_KEY_A)) break;
-    }
-    int blank = 1;
-    for (int b = 0; b < 3 && blank >= 0; b++) {
-      if (!nfcReadMifareBlock(4 + b, blk[b])) blank = -1;
-      else if (!blockIsBlank(blk[b])) blank = 0;
-    }
-    data = blank;
-  }
   // A CFS record on the factory key is a write that stopped before the
   // trailer took (17.10.2026, 00:DF:A7:2E on spool 28: the sticker dropped
   // out mid write and was then "holds data" for good, so the scale never
-  // offered it again). Ours to finish: treated as blank.
+  // offered it again). Ours to finish: treated as blank. Other data is
+  // only believed on the second read (see readSector1).
+  int data = -1;   // -1 unread, 0 holds data, 1 blank
   bool half = false;
-  if (data == 0) {
-    CrealityTag t;
-    half = crealityDecode(blk, &t);
+  int data_reads = 0;
+  uint8_t blk[3][16];
+  for (int attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) {
+      if (!wakeCard(uid, uid_str, &silent) || silent ||
+          !nfcAuthMifareSector(1, FACTORY_KEY, uid, NFC_KEY_A)) break;
+    }
+    data = readSector1(blk);
+    if (data == 1) {
+      if (data_reads > 0) logSDf("NFC: %s showed data on one read, blank on the next - weak read", uid_str);
+      break;
+    }
+    if (data == 0) {
+      CrealityTag t;
+      half = crealityDecode(blk, &t);
+      if (half || ++data_reads >= 2) break;
+    }
   }
   // After an authentication the card does not answer the next poll.
   int back = silent ? 0 : wakeCard(uid, uid_str, &silent);
