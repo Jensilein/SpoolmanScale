@@ -409,17 +409,27 @@ CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4],
   }
 
   uint8_t old[3][16];
+  bool has_data = false;
   for (int b = 0; b < 3; b++) {
     if (!nfcReadMifareBlock(4 + b, old[b])) {
       logSDf("CFS write: %s block %d unreadable - not written", uid_str, 4 + b);
       wakeCard(uid, uid_str, &silent);
       return CREALITY_WRITE_FAILED;
     }
-    if (!blockIsBlank(old[b])) {
-      logSDf("CFS write: %s block %d holds data - not written", uid_str, 4 + b);
+    if (!blockIsBlank(old[b])) has_data = true;
+  }
+  if (has_data) {
+    // Only a CFS record still on the factory key may be written over: an
+    // earlier write of ours that stopped before the trailer (see
+    // crealityProbeFactory). Anything else stays untouched.
+    CrealityTag t;
+    if (!crealityDecode(old, &t)) {
+      logSDf("CFS write: %s sector 1 holds data - not written", uid_str);
       wakeCard(uid, uid_str, &silent);
       return CREALITY_WRITE_NOT_BLANK;
     }
+    logSDf("CFS write: %s holds an unlocked CFS record (earlier write cut short) - writing it again",
+           uid_str);
   }
 
   // 2. Sector 1: the record, then the trailer that locks it to the new key.
@@ -481,23 +491,34 @@ int crealityProbeFactory(const uint8_t uid[4], const char* uid_str) {
   // opened and then read nothing, and went to the Bambu probe as "holds
   // data"). So a failed read gets one more go after a wake.
   int data = -1;   // -1 unread, 0 holds data, 1 blank
+  uint8_t blk[3][16];
   for (int attempt = 0; attempt < 2 && data < 0; attempt++) {
     if (attempt > 0) {
       if (!wakeCard(uid, uid_str, &silent) ||
           !nfcAuthMifareSector(1, FACTORY_KEY, uid, NFC_KEY_A)) break;
     }
     int blank = 1;
-    for (int b = 0; b < 3 && blank == 1; b++) {
-      uint8_t d[16];
-      if (!nfcReadMifareBlock(4 + b, d)) blank = -1;
-      else if (!blockIsBlank(d)) blank = 0;
+    for (int b = 0; b < 3 && blank >= 0; b++) {
+      if (!nfcReadMifareBlock(4 + b, blk[b])) blank = -1;
+      else if (!blockIsBlank(blk[b])) blank = 0;
     }
     data = blank;
+  }
+  // A CFS record on the factory key is a write that stopped before the
+  // trailer took (17.10.2026, 00:DF:A7:2E on spool 28: the sticker dropped
+  // out mid write and was then "holds data" for good, so the scale never
+  // offered it again). Ours to finish: treated as blank.
+  bool half = false;
+  if (data == 0) {
+    CrealityTag t;
+    half = crealityDecode(blk, &t);
   }
   // After an authentication the card does not answer the next poll.
   int back = silent ? 0 : wakeCard(uid, uid_str, &silent);
   logSDf("NFC: %s opens with the factory key, %s (woke=%d)", uid_str,
-         data == 1 ? "blank" : data == 0 ? "but sector 1 holds data"
-                                         : "but sector 1 could not be read", back);
-  return data == 1 ? CREALITY_FACTORY_BLANK : CREALITY_FACTORY_OPENS;
+         data == 1 ? "blank"
+         : half    ? "holds a CFS record that was never locked - treated as blank"
+         : data == 0 ? "but sector 1 holds data"
+                     : "but sector 1 could not be read", back);
+  return (data == 1 || half) ? CREALITY_FACTORY_BLANK : CREALITY_FACTORY_OPENS;
 }
