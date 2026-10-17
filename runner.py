@@ -4,7 +4,7 @@ runner.py - startet die Filament-Werkzeuge im Takt (fuer den Docker-Container
 "filament-tools" auf der Synology, laeuft aber auch auf jedem anderen Rechner).
 
   ort_sync.py           alle 5 Minuten  (Minute 0, 5, 10, ...)
-  spoolman_waechter.py  alle 15 Minuten (Minute 2, 17, 32, 47)
+  spoolman_waechter.py  jede Minute (meldet erst nach seiner Wartezeit)
 
 Beim Start und danach einmal am Tag werden die Skripte frisch aus dem
 GitHub-Zweig geladen. Ist GitHub nicht erreichbar, laufen die zuletzt
@@ -25,7 +25,7 @@ RAW = f"https://raw.githubusercontent.com/Jensilein/SpoolmanScale/{BRANCH}/"
 SCRIPTS = ["ort_sync.py", "spoolman_waechter.py"]
 JOBS = [  # (Skript, Takt in Minuten, Versatz)
     ("ort_sync.py", 5, 0),
-    ("spoolman_waechter.py", 15, 2),
+    ("spoolman_waechter.py", 1, 0),
 ]
 LOGS = ["ort_sync.log", "spoolman_waechter.log"]
 

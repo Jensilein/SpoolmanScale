@@ -22,8 +22,9 @@ Dienste
   dienst             Spoolman / CFSync / Bambuddy / Spoolman-Waage nicht erreichbar,
                      ort_sync.py meldet Fehler
 
-Gemeldet wird ein Problem erst, wenn es bei zwei Laeufen hintereinander
-besteht, und dann nur einmal. Ist es behoben, wird es vergessen. Fuer Dienste
+Laeuft jede Minute. Gemeldet wird ein Problem erst, wenn es seine Wartezeit
+lang ununterbrochen besteht (Filamente 2 min, nicht beschriebener Aufkleber
+10 min, ...; siehe WARTEZEIT), und dann nur einmal. Ist es behoben, wird es vergessen. Fuer Dienste
 kommt zusaetzlich eine Meldung, wenn sie wieder laufen.
 
 Aufruf:   python3 spoolman_waechter.py          pruefen und melden
@@ -72,6 +73,18 @@ DEFAULTS = {
     "ein_tag_nach_minuten": 60,
     "farbabstand": 60,
     "ignorieren": [],                   # Schluessel aus dem Testlauf, z. B. "spule:9:ein_tag"
+    "wartezeiten": {},                  # z. B. {"tag_unbeschrieben": 15} - ueberschreibt WARTEZEIT
+}
+
+# Minuten, die ein Fund ununterbrochen bestehen muss, bevor er gemeldet wird.
+# Kurz, wo ein Fehler nach dem Speichern feststeht; laenger, wo der normale
+# Ablauf ihn kurz erzeugt (Aufkleber verknuepft, Beschreiben folgt gleich).
+WARTEZEIT = {
+    "extid": 2, "gewicht_spule": 2, "hersteller_im_namen": 2, "keine_farbe": 2, "silk_ohne_pla": 2,
+    "kein_leergewicht": 3, "ntag": 3, "uid_doppelt": 3,
+    "tag_unbeschrieben": 10, "ein_tag": 0,     # ein_tag wartet schon ueber das Alter der Spule
+    "cfs_ohne_tag": 5, "cfs_farbe": 5,
+    "dienst": 5,
 }
 
 log = logging.getLogger("waechter")
@@ -431,11 +444,22 @@ def main():
             print(f"\n({len(ign & set(F.items))} Meldung(en) per 'ignorieren' stummgeschaltet)")
         return 0
 
-    state = load_json(STATE_PATH, {"vorher": [], "gemeldet": {}})
-    vorher, gemeldet = set(state.get("vorher", [])), dict(state.get("gemeldet", {}))
+    state = load_json(STATE_PATH, {})
+    seit = dict(state.get("seit", {}))          # Schluessel -> erstmals gesehen (Unixzeit)
+    gemeldet = dict(state.get("gemeldet", {}))
+    jetzt = time.time()
+    warte = dict(WARTEZEIT)
+    warte.update(cfg.get("wartezeiten") or {})
+    for k in current:
+        seit.setdefault(k, jetzt)
+    seit = {k: t for k, t in seit.items() if k in current}
 
-    # Neue Meldungen: jetzt und beim letzten Lauf da, noch nicht gemeldet
-    neu = {k: v for k, v in current.items() if k in vorher and k not in gemeldet}
+    def faellig(k):
+        art = "dienst" if k.startswith("dienst:") else k.rsplit(":", 1)[-1]
+        return jetzt - seit[k] >= 60 * float(warte.get(art, 5)) - 5
+
+    # Neue Meldungen: Wartezeit abgelaufen, noch nicht gemeldet
+    neu = {k: v for k, v in current.items() if k not in gemeldet and faellig(k)}
     # Dienste wieder da
     wieder = [k for k in gemeldet if k.startswith("dienst:") and k not in current]
 
@@ -484,7 +508,7 @@ def main():
 
     # Behobenes vergessen, damit es bei erneutem Auftreten wieder gemeldet wird
     gemeldet = {k: v for k, v in gemeldet.items() if k in current}
-    save_json(STATE_PATH, {"vorher": sorted(current), "gemeldet": gemeldet})
+    save_json(STATE_PATH, {"seit": seit, "gemeldet": gemeldet})
     if not po_ok and neu:
         log.warning("Pushover nicht eingerichtet (waage_config.json -> low_stock) - nur im Log")
     return 0
