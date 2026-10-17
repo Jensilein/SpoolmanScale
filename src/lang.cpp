@@ -1584,6 +1584,9 @@ const char* const STRINGS[][3] = {
   { "Kopieren nicht möglich, bitte markieren",
     "Cannot copy, please select the text",
     "Copie impossible, sélectionnez le texte" },  // STR_W_SESSION_COPYFAIL
+  { "Auf eigener Seite öffnen",
+    "Open on its own page",
+    "Ouvrir dans une page à part" },  // STR_W_SESSION_OPEN
   { "Einen beschreibbaren NTAG auflegen, Spule wählen, schreiben. Was auf dem Tag steht, wird ersetzt. Tags ab Werk sind meist MIFARE Classic oder gesperrt und lassen sich nur lesen.",
     "Place a writable NTAG on the reader, pick a spool, and write it. Whatever is already on the tag is replaced. Factory tags are usually MIFARE Classic or locked, and can only be read.",
     "Posez un NTAG inscriptible sur le lecteur, choisissez une bobine, puis cliquez sur Écrire le tag. Tout ce que contient déjà le tag est remplacé. Les tags posés en usine sont le plus souvent des MIFARE Classic ou sont verrouillés : ils ne peuvent qu'être lus." },  // STR_W_TAG_NOTE
