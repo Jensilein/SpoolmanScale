@@ -21,7 +21,7 @@ Sicherheitsregeln:
 
 Aufruf:   python3 ort_sync.py          einmal abgleichen
           python3 ort_sync.py --test   wie dry_run, unabhaengig von der Einstellung
-Einstellungen: ~/ort_sync.json (wird beim ersten Aufruf mit Standardwerten angelegt)
+Einstellungen: ort_sync.json im Ordner $FT_DIR (Standard: Home-Verzeichnis) (wird beim ersten Aufruf mit Standardwerten angelegt)
 """
 import json
 import logging
@@ -31,8 +31,9 @@ import sys
 
 import requests
 
-CONFIG_PATH = os.path.expanduser("~/ort_sync.json")
-LOG_PATH = os.path.expanduser("~/ort_sync.log")
+BASE_DIR = os.environ.get("FT_DIR") or os.path.expanduser("~")
+CONFIG_PATH = os.path.join(BASE_DIR, "ort_sync.json")
+LOG_PATH = os.path.join(BASE_DIR, "ort_sync.log")
 
 DEFAULTS = {
     "dry_run": True,

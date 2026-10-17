@@ -1,0 +1,18 @@
+services:
+  filament-tools:
+    image: python:3.12-slim
+    container_name: filament-tools
+    environment:
+      - TZ=Europe/Berlin
+      - FT_DIR=/data
+      - FT_BRANCH=filastation-tools
+    volumes:
+      - ./:/data
+    command:
+      - sh
+      - -c
+      - >-
+        pip install -q --no-cache-dir --root-user-action=ignore requests &&
+        python -c "import urllib.request as u; u.urlretrieve('https://raw.githubusercontent.com/Jensilein/SpoolmanScale/filastation-tools/runner.py', '/tmp/runner.py')" &&
+        exec python -u /tmp/runner.py
+    restart: unless-stopped

@@ -28,8 +28,8 @@ kommt zusaetzlich eine Meldung, wenn sie wieder laufen.
 
 Aufruf:   python3 spoolman_waechter.py          pruefen und melden
           python3 spoolman_waechter.py --test   alles anzeigen, nichts senden, nichts merken
-Einstellungen: ~/spoolman_waechter.json (beim ersten Lauf angelegt)
-               Pushover + Spoolman aus ~/waage_config.json, CFSync/Bambuddy aus ~/ort_sync.json
+Einstellungen: spoolman_waechter.json im Ordner $FT_DIR (Standard: Home), beim ersten Lauf angelegt
+               Pushover aus spoolman_waechter.json oder waage_config.json, Adressen aus ort_sync.json
 """
 import json
 import logging
@@ -41,7 +41,7 @@ from datetime import date, datetime, timezone
 
 import requests
 
-HOME = os.path.expanduser("~")
+HOME = os.environ.get("FT_DIR") or os.path.expanduser("~")
 CFG_PATH = os.path.join(HOME, "spoolman_waechter.json")
 STATE_PATH = os.path.join(HOME, ".spoolman_waechter_state.json")
 LOG_PATH = os.path.join(HOME, "spoolman_waechter.log")
@@ -53,6 +53,9 @@ PUSHOVER_API = "https://api.pushover.net/1/messages.json"
 DEFAULTS = {
     "pruefen_ab": None,                 # Filamente ab diesem Datum pruefen
     "spoolman_waage_url": "",           # z. B. "http://spoolmanscale.local" - leer = nicht pruefen
+    "filastation_waage_url": "",        # z. B. "http://192.168.178.xx:5000" - leer = nicht pruefen
+    "pushover_user_key": "",            # leer = aus waage_config.json (low_stock) nehmen
+    "pushover_app_token": "",
     "ein_tag_nach_minuten": 60,
     "farbabstand": 60,
     "ignorieren": [],                   # Schluessel aus dem Testlauf, z. B. "spule:9:ein_tag"
@@ -306,7 +309,9 @@ def main():
     ort = load_json(ORT_CONFIG, {})
     sm = ((wcfg.get("spoolman") or {}).get("url") or ort.get("spoolman_url")
           or "http://192.168.178.40:7912").rstrip("/")
-    po = wcfg.get("low_stock") or {}
+    po = dict(wcfg.get("low_stock") or {})
+    if cfg.get("pushover_user_key") and cfg.get("pushover_app_token"):
+        po.update(pushover_user_key=cfg["pushover_user_key"], pushover_app_token=cfg["pushover_app_token"])
     po_ok = bool(po.get("pushover_user_key")) and bool(po.get("pushover_app_token"))
 
     F = Findings()
@@ -337,6 +342,8 @@ def main():
                   {"X-API-Key": ort.get("bambuddy_api_key", "")})
     if cfg.get("spoolman_waage_url"):
         check_url(F, "spoolman_waage", "Spoolman-Waage", cfg["spoolman_waage_url"].rstrip("/") + "/")
+    if cfg.get("filastation_waage_url"):
+        check_url(F, "filastation_waage", "FilaStation-Waage", cfg["filastation_waage_url"].rstrip("/") + "/")
     check_ort_log(F)
 
     ign = set(cfg.get("ignorieren") or [])
