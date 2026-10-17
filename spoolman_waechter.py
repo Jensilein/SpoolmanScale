@@ -6,6 +6,7 @@ Eingabe- und Bedienfehler und meldet sie per Pushover.
 Spulen
   tag_unbeschrieben  Aufkleber verknuepft ("Tag's"), aber nie als CFS-Tag beschrieben
   ein_tag            nur ein (oder kein) Tag an der Spule, angelegt vor mehr als 1 Stunde
+                     (nicht bei leeren Spulen mit Rest 0 g)
   kein_leergewicht   weder bei Spule, Filament noch Hersteller ein Leergewicht
   ntag               NTAG-UID eingetragen (taugt nicht als CFS-Tag)
   uid_doppelt        dieselbe UID an zwei Spulen
@@ -82,7 +83,7 @@ DEFAULTS = {
 WARTEZEIT = {
     "extid": 2, "gewicht_spule": 2, "hersteller_im_namen": 2, "keine_farbe": 2, "silk_ohne_pla": 2,
     "kein_leergewicht": 3, "ntag": 3, "uid_doppelt": 3,
-    "tag_unbeschrieben": 10, "ein_tag": 0,     # ein_tag wartet schon ueber das Alter der Spule
+    "tag_unbeschrieben": 10, "ein_tag": 10,    # neue Spulen warten zusaetzlich 60 min ab Anlegen
     "cfs_ohne_tag": 5, "cfs_farbe": 5,
     "dienst": 5,
 }
@@ -189,9 +190,11 @@ def check_spools(F, cfg, sm, spools):
                 F.add(f"spule:{sid}:tag_unbeschrieben", lbl,
                       f"Aufkleber {', '.join(unwritten)} verknuepft, aber nie als CFS-Tag beschrieben "
                       f"- an der Spoolman-Waage beschreiben oder in Spoolman unter Tag's entfernen", link)
-            if len(allu) < 2 and age_minutes(s.get("registered")) > cfg["ein_tag_nach_minuten"]:
+            leer = (s.get("remaining_weight") or 0) <= 0   # leer, wartet aufs Neubespulen
+            if len(allu) < 2 and not leer and age_minutes(s.get("registered")) > cfg["ein_tag_nach_minuten"]:
                 F.add(f"spule:{sid}:ein_tag", lbl,
-                      f"nur {len(allu)} Tag - zweiten Aufkleber verknuepfen und beschreiben", link)
+                      "kein Tag - zwei Aufkleber verknuepfen und beschreiben" if not allu else
+                      "nur 1 Tag - zweiten Aufkleber verknuepfen und beschreiben", link)
 
         f = s.get("filament") or {}
         v = f.get("vendor") or {}
