@@ -59,7 +59,7 @@ Der Wächter prüft jede Minute, meldet einen Fehler aber erst, wenn er so lange
 | Filament (Externe ID doppelt, Gewicht Spule, Hersteller im Namen, keine Farbe, Silk ohne PLA) | 2 min |
 | Spule ohne Leergewicht, NTAG statt MIFARE, UID doppelt | 3 min |
 | Aufkleber verknüpft, aber nicht beschrieben | 10 min |
-| Spule mit nur einem Tag | 60 min nach Anlegen der Spule |
+| Spule mit nur einem oder keinem Tag (nicht bei leeren Spulen, Rest 0 g) | 10 min, frühestens 60 min nach Anlegen der Spule |
 | CFS-Slot ohne Tag / falsche Farbe | 5 min |
 | Dienst nicht erreichbar | 5 min |
 
