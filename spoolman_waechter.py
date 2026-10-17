@@ -221,7 +221,7 @@ def check_filaments(F, cfg, sm, fils, ab):
         vendor = (fil.get("vendor") or {}).get("name") or ""
         name = fil.get("name") or ""
         lbl = f"Filament {vendor} {name}".strip()
-        link = f"{sm}/filament/edit/{fid}"
+        link = f"{sm}/filament/show/{fid}"
         material = (fil.get("material") or "").strip()
 
         ext = (fil.get("external_id") or "").strip()
