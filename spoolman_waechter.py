@@ -28,16 +28,20 @@ kommt zusaetzlich eine Meldung, wenn sie wieder laufen.
 
 Aufruf:   python3 spoolman_waechter.py          pruefen und melden
           python3 spoolman_waechter.py --test   alles anzeigen, nichts senden, nichts merken
+          python3 spoolman_waechter.py --testmail  eine Testmail schicken
 Einstellungen: spoolman_waechter.json im Ordner $FT_DIR (Standard: Home), beim ersten Lauf angelegt
                Pushover aus spoolman_waechter.json oder waage_config.json, Adressen aus ort_sync.json
 """
+import html
 import json
+import smtplib
 import logging
 import os
 import re
 import sys
 import time
 from datetime import date, datetime, timezone
+from email.message import EmailMessage
 
 import requests
 
@@ -56,6 +60,14 @@ DEFAULTS = {
     "filastation_waage_url": "",        # z. B. "http://192.168.178.xx:5000" - leer = nicht pruefen
     "pushover_user_key": "",            # leer = aus waage_config.json (low_stock) nehmen
     "pushover_app_token": "",
+    # E-Mail (zusaetzlich zu Pushover): alle neuen Funde eines Laufs in einer Mail
+    "mail_aktiv": False,
+    "mail_server": "",                  # z. B. "mx.freenet.de"
+    "mail_port": 587,                   # 587 = STARTTLS, 465 = SSL
+    "mail_benutzer": "",                # meist die volle Mailadresse
+    "mail_passwort": "",
+    "mail_von": "",                     # leer = mail_benutzer
+    "mail_an": "",
     "ein_tag_nach_minuten": 60,
     "farbabstand": 60,
     "ignorieren": [],                   # Schluessel aus dem Testlauf, z. B. "spule:9:ein_tag"
@@ -292,8 +304,47 @@ def send_pushover(po, title, msg, url):
     requests.post(PUSHOVER_API, data=data, timeout=10).raise_for_status()
 
 
+def mail_ok(cfg):
+    return bool(cfg.get("mail_aktiv") and cfg.get("mail_server") and cfg.get("mail_an"))
+
+
+def send_mail(cfg, subject, blocks):
+    """blocks: Liste von (Ueberschrift, [Texte], Link)"""
+    plain, rich = [], []
+    for title, texts, link in blocks:
+        plain.append(title)
+        plain += ["  - " + t for t in texts]
+        if link:
+            plain.append("  " + link)
+        plain.append("")
+        items = "".join(f"<li>{html.escape(t)}</li>" for t in texts)
+        a = (f'<p style="margin:4px 0 0"><a href="{html.escape(link)}">In Spoolman oeffnen</a> '
+             f'<span style="color:#888">{html.escape(link)}</span></p>') if link else ""
+        rich.append(f'<div style="margin:0 0 16px"><b>{html.escape(title)}</b><ul style="margin:4px 0">'
+                    f'{items}</ul>{a}</div>')
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = cfg.get("mail_von") or cfg.get("mail_benutzer")
+    msg["To"] = cfg["mail_an"]
+    msg.set_content("\n".join(plain) + "\n-- spoolman_waechter.py")
+    msg.add_alternative('<div style="font-family:sans-serif;font-size:14px">' + "".join(rich)
+                        + '<p style="color:#888;font-size:12px">spoolman_waechter.py</p></div>',
+                        subtype="html")
+    port = int(cfg.get("mail_port") or 587)
+    if port == 465:
+        srv = smtplib.SMTP_SSL(cfg["mail_server"], port, timeout=20)
+    else:
+        srv = smtplib.SMTP(cfg["mail_server"], port, timeout=20)
+        srv.starttls()
+    with srv:
+        if cfg.get("mail_benutzer"):
+            srv.login(cfg["mail_benutzer"], cfg.get("mail_passwort", ""))
+        srv.send_message(msg)
+
+
 def main():
     test = "--test" in sys.argv
+    testmail = "--testmail" in sys.argv
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s",
                         handlers=[logging.FileHandler(LOG_PATH), logging.StreamHandler()])
 
@@ -304,6 +355,19 @@ def main():
     if not os.path.exists(CFG_PATH) and not test:
         save_json(CFG_PATH, cfg)
         log.info(f"Einstellungen angelegt: {CFG_PATH}")
+
+    if testmail:
+        if not mail_ok(cfg):
+            print("E-Mail nicht eingerichtet: mail_aktiv, mail_server und mail_an in spoolman_waechter.json setzen")
+            return 1
+        try:
+            send_mail(cfg, "Spoolman-Waechter: Testmail",
+                      [("Testmail", ["Wenn du das liest, kommen die Meldungen per E-Mail an."], "")])
+            print(f"Testmail an {cfg['mail_an']} gesendet")
+            return 0
+        except Exception as e:
+            print(f"Testmail fehlgeschlagen: {e}")
+            return 1
 
     wcfg = load_json(WAAGE_CONFIG, {})
     ort = load_json(ORT_CONFIG, {})
@@ -371,17 +435,28 @@ def main():
         gruppen.setdefault(g, {"texte": [], "link": l, "keys": []})
         gruppen[g]["texte"].append(t)
         gruppen[g]["keys"].append(k)
+    po_fail = set()
     for g, d in gruppen.items():
         msg = "\n".join("• " + t for t in d["texte"])
         log.info(f"{g}: {msg}")
-        ok = True
         if po_ok:
             try:
                 send_pushover(po, f"Pruefen: {g}", msg, d["link"])
             except Exception as e:
                 log.warning(f"Pushover fehlgeschlagen: {e}")
-                ok = False
-        if ok:
+                po_fail.add(g)
+    mail_sent = False
+    if gruppen and mail_ok(cfg):
+        try:
+            n = sum(len(d["texte"]) for d in gruppen.values())
+            send_mail(cfg, f"Spoolman-Waechter: {n} Punkt(e) pruefen",
+                      [(g, d["texte"], d["link"]) for g, d in gruppen.items()])
+            mail_sent = True
+            log.info(f"E-Mail an {cfg['mail_an']} gesendet")
+        except Exception as e:
+            log.warning(f"E-Mail fehlgeschlagen: {e}")
+    for g, d in gruppen.items():
+        if g not in po_fail or mail_sent:
             for k in d["keys"]:
                 gemeldet[k] = current[k][1]
     for k in wieder:
@@ -391,6 +466,12 @@ def main():
                 send_pushover(po, "Dienst wieder erreichbar", "✓ behoben: " + gemeldet[k], "")
             except Exception as e:
                 log.warning(f"Pushover fehlgeschlagen: {e}")
+    if wieder and mail_ok(cfg):
+        try:
+            send_mail(cfg, "Spoolman-Waechter: wieder in Ordnung",
+                      [("Wieder in Ordnung", [gemeldet[k] for k in wieder], "")])
+        except Exception as e:
+            log.warning(f"E-Mail fehlgeschlagen: {e}")
 
     # Behobenes vergessen, damit es bei erneutem Auftreten wieder gemeldet wird
     gemeldet = {k: v for k, v in gemeldet.items() if k in current}
