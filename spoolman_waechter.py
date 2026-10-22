@@ -418,7 +418,7 @@ def main():
     cf = (ort.get("cfsync_url") or "").rstrip("/")
     if cf:
         try:
-            r = requests.get(cf + "/api/ui/state", timeout=8)
+            r = requests.get(cf + "/api/ui/state", timeout=30)  # CFSync haengt kurz, wenn ein K2 aus ist
             r.raise_for_status()
             printers = r.json()["result"]["printers"]
             if spools is not None:

@@ -28,6 +28,7 @@ import logging
 import os
 import re
 import sys
+import time
 
 import requests
 
@@ -49,8 +50,10 @@ DEFAULTS = {
     },
     "storage_location": "Lager",
     "color_tolerance": 60,      # maximaler RGB-Abstand Slotfarbe <-> Spoolman-Farbe
-    "timeout_s": 10,
+    "timeout_s": 30,            # Mindestwert 30 (CFSync haengt kurz, wenn ein K2 aus ist)
 }
+MIN_TIMEOUT_S = 30
+RETRY_WAIT_S = 5
 
 # Orte, die dieses Skript selbst setzt und daher auch wieder aendern darf.
 # AMS-Format wie bei Bambuddy ("X1C - AMS A1"), damit Bambuddy sie als Fach und
@@ -73,6 +76,8 @@ def load_config():
     merged = dict(DEFAULTS)
     merged.update(cfg)
     merged["printer_names"] = {**DEFAULTS["printer_names"], **cfg.get("printer_names", {})}
+    # Alte Einstellungsdateien enthalten noch 10 s - auf den Mindestwert anheben
+    merged["timeout_s"] = max(merged.get("timeout_s") or 0, MIN_TIMEOUT_S)
     return merged
 
 
@@ -97,15 +102,24 @@ def spool_color(spool):
     return fil.get("color_hex") or None
 
 
+def get_retry(url, timeout, headers=None):
+    """GET mit einem Wiederholversuch bei Zeitueberschreitung oder Verbindungsfehler."""
+    try:
+        r = requests.get(url, headers=headers or {}, timeout=timeout)
+    except (requests.Timeout, requests.ConnectionError) as e:
+        log.warning(f"{url}: {e} - neuer Versuch in {RETRY_WAIT_S} s")
+        time.sleep(RETRY_WAIT_S)
+        r = requests.get(url, headers=headers or {}, timeout=timeout)
+    r.raise_for_status()
+    return r
+
+
 def fetch_all(cfg):
     t = cfg["timeout_s"]
-    sm = requests.get(cfg["spoolman_url"].rstrip("/") + "/api/v1/spool", timeout=t)
-    sm.raise_for_status()
-    bb = requests.get(cfg["bambuddy_url"].rstrip("/") + "/api/v1/spoolman/inventory/slot-assignments/all",
-                      headers={"X-API-Key": cfg["bambuddy_api_key"]}, timeout=t)
-    bb.raise_for_status()
-    cf = requests.get(cfg["cfsync_url"].rstrip("/") + "/api/ui/state", timeout=t)
-    cf.raise_for_status()
+    sm = get_retry(cfg["spoolman_url"].rstrip("/") + "/api/v1/spool", t)
+    bb = get_retry(cfg["bambuddy_url"].rstrip("/") + "/api/v1/spoolman/inventory/slot-assignments/all",
+                   t, {"X-API-Key": cfg["bambuddy_api_key"]})
+    cf = get_retry(cfg["cfsync_url"].rstrip("/") + "/api/ui/state", t)
     return sm.json(), bb.json(), cf.json()["result"]["printers"]
 
 
