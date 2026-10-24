@@ -64,3 +64,9 @@ Der Wächter prüft jede Minute, meldet einen Fehler aber erst, wenn er so lange
 | Dienst nicht erreichbar | 5 min |
 
 Ändern in `spoolman_waechter.json`, z. B. `"wartezeiten": {"tag_unbeschrieben": 15}`.
+
+## Live-Log der FilaStation-Waage (`waage_log_web.py`)
+
+Läuft auf der FilaStation-Waage selbst (nicht im Container). Zeigt `~/waage.log` im Browser unter
+`http://filastation-waage.local:8090/` – große Schrift (A−/A+), Farben, Filter, Live/Pause, Kopieren –
+wie `/log/live` der Spoolman-Waage. `waage.py` bleibt unverändert; Dienst: `waage-log.service`.

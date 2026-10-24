@@ -1,0 +1,13 @@
+[Unit]
+Description=FilaStation-Waage Live-Log im Browser (Port 8090)
+After=network-online.target
+
+[Service]
+User=jens
+Environment=WAAGE_LOG=/home/jens/waage.log
+ExecStart=/usr/bin/python3 /home/jens/waage_log_web.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
