@@ -1538,6 +1538,9 @@ enum StringID {
   STR_TW_CFS_SID_HINT,
   STR_AMSPICK_LOADING,
   STR_AMSV_LAST_HERE,          // second line of the bay a spool sat in last         // shown from the lift until the bay question stands
+  STR_TV_CFS_WRITE,            // tag view button for a 4 byte MIFARE tag, %d = spool id
+  STR_TW_CFS_RW_TITLE,         // the question behind it
+  STR_TW_CFS_RW_HINT,          // and what it writes and what it leaves alone
 
   STR_COUNT
 };
