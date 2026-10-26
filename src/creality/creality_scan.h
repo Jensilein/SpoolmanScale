@@ -66,5 +66,7 @@ enum CrealityFactoryProbe {
   CREALITY_FACTORY_REFUSED = 0,  // other keys: the usual probes decide
   CREALITY_FACTORY_OPENS   = 1,  // factory key, but data in it, or unreadable
   CREALITY_FACTORY_BLANK   = 2,  // factory key and empty: ready for a CFS write
+  CREALITY_FACTORY_UNREAD  = 3,  // factory key, but the data blocks did not read:
+                                 // a weak read, says nothing about the contents
 };
 int crealityProbeFactory(const uint8_t uid[4], const char* uid_str);

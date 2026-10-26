@@ -338,10 +338,13 @@ CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4],
     delay(30);
     found = nfcReadPassiveTarget(uid, &uid_len, 300) && right_card();
   }
-  // An overwrite reads the tag the moment it answers again (below), the way
-  // the main poll reads it; nothing more is asked of it here.
+  // An overwrite of a known Creality tag reads it the moment it answers again
+  // (below), the way the main poll reads it; nothing more is asked of it here.
+  // Any other tag - the tag view offers the write for every MIFARE tag that is
+  // not Bambu's - is waited for like a blank one.
+  const bool known_creality = expect && tagFamilyGet(expect) == TAG_FAMILY_CREALITY;
   bool deferred = false;
-  if (!found && overwrite && expect && wait) {
+  if (!found && overwrite && known_creality && wait) {
     memcpy(uid, expect, 4);
     uid_len = 4;
     found = deferred = true;
@@ -376,7 +379,10 @@ CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4],
   if (overwrite) {
     uint8_t blocks[4][16];
     bool ok = !deferred && nfcReadMifareSector(1, key, uid, blocks, NFC_KEY_A);
-    if (!ok && wait) {
+    // Only a tag known to be Creality's is waited for here: a blank one never
+    // opens with this key, and 20 s of "put it back" would be for nothing.
+    // A weak Creality tag the scale never settled gets its key again below.
+    if (!ok && wait && tagFamilyGet(uid) == TAG_FAMILY_CREALITY) {
       logSDf("CFS write: %s does not answer with the Creality key, waiting for the spool to be put back",
              uid_str);
       ok = waitAndRead(uid, key, blocks, wait);
@@ -385,24 +391,36 @@ CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4],
       CrealityTag t;
       return overwriteRecord(uid, uid_str, key, cipher, rec40, wait, crealityDecode(blocks, &t));
     }
-    if (!wakeCard(uid, uid_str, &silent) || silent) return CREALITY_WRITE_NO_TAG;
+    if (!wakeCard(uid, uid_str, &silent) || silent) {
+      // A tag that has gone quiet is asked to be put back rather than given
+      // up on: from the tag view that is a weak tag more often than not.
+      if (!wait) return CREALITY_WRITE_NO_TAG;
+      silent = false;
+      uint8_t got[NFC_UID_MAX];
+      uint8_t got_len = 0;
+      if (!waitForCard(got, &got_len, uid, wait)) return CREALITY_WRITE_NO_TAG;
+    }
   }
 
   // 1. Is sector 1 still on the factory key? A refused key halts the card,
-  //    so every "no" is followed by a wake before the next question.
-  //    A tag this session already found blank is not given up on after one
-  //    refusal: a weakly placed sticker refuses even the right key now and
-  //    then (13.10.2026). It is asked to be put back, twice at most.
+  //    so every "no" is followed by a wake before the next question. A card
+  //    that refuses the factory key is asked its Creality key as well.
+  //
+  //    Refusing both says nothing for sure: a weakly placed sticker refuses
+  //    even the right key now and then (13.10.2026), and on 26.10.2026 the
+  //    erased original tag 15:C5:C5:11 of spool 38 was turned away as "not a
+  //    blank tag" twice while it kept dropping out ("stopped answering, woken
+  //    again"), although it opened with the factory key a minute before and
+  //    took a CFtag write from a phone afterwards. Only the family of the tag
+  //    used to decide whether a refusal was worth a second try - and a tag
+  //    that drops out is exactly one whose family the scale never settled.
+  //    So any tag that is not known to be Bambu's is asked to be put back,
+  //    twice at most, before it counts as somebody else's. Nothing is written
+  //    until one of the two keys opens it, so a truly foreign tag only costs
+  //    the user the two placements.
   bool opened = nfcAuthMifareSector(1, FACTORY_KEY, uid, NFC_KEY_A);
-  for (int again = 0; !opened && again < 2 && wait &&
-                      tagFamilyGet(uid) == TAG_FAMILY_BLANK; again++) {
-    logSDf("CFS write: %s refused the factory key, but was blank - asking for it again", uid_str);
-    uint8_t got[NFC_UID_MAX];
-    uint8_t got_len = 0;
-    if (!waitForCard(got, &got_len, uid, wait)) break;
-    opened = nfcAuthMifareSector(1, FACTORY_KEY, uid, NFC_KEY_A);
-  }
-  if (!opened) {
+  const bool may_retry = wait && tagFamilyGet(uid) != TAG_FAMILY_BAMBU;
+  for (int again = 0; !opened; again++) {
     int woke = wakeCard(uid, uid_str, &silent);
     uint8_t blocks[4][16];
     if (woke && !silent && nfcReadMifareSector(1, key, uid, blocks, NFC_KEY_A)) {
@@ -417,7 +435,18 @@ CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4],
       }
       return overwriteRecord(uid, uid_str, key, cipher, rec40, wait, rec);
     }
-    logSDf("CFS write: %s refuses the factory key - not a blank tag, not written", uid_str);
+    if (!may_retry || again >= 2) break;
+    logSDf("CFS write: %s refused the factory key and the Creality key (woke=%d) - "
+           "a weak read? asking for it again (%d/2)", uid_str, woke, again + 1);
+    silent = false;
+    uint8_t got[NFC_UID_MAX];
+    uint8_t got_len = 0;
+    if (!waitForCard(got, &got_len, uid, wait)) break;
+    opened = nfcAuthMifareSector(1, FACTORY_KEY, uid, NFC_KEY_A);
+  }
+  if (!opened) {
+    logSDf("CFS write: %s refuses the factory key and the Creality key - not a blank tag, not written",
+           uid_str);
     if (!silent) wakeCard(uid, uid_str, &silent);
     return CREALITY_WRITE_NOT_BLANK;
   }
@@ -434,6 +463,26 @@ CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4],
       if (st == 1) logSDf("CFS write: %s read as holding data, blank on the second read - writing", uid_str);
     } else {
       st = -1;
+    }
+  }
+  // A read that broke off on a weakly placed tag (see crealityProbeFactory):
+  // the spool is put back, twice at most, rather than the write given up.
+  for (int again = 0; st < 0 && may_retry && again < 2; again++) {
+    logSDf("CFS write: %s sector 1 did not read - asking for it again (%d/2)", uid_str, again + 1);
+    silent = false;
+    uint8_t got[NFC_UID_MAX];
+    uint8_t got_len = 0;
+    if (!waitForCard(got, &got_len, uid, wait)) break;
+    if (!nfcAuthMifareSector(1, FACTORY_KEY, uid, NFC_KEY_A)) break;
+    st = readSector1(old);
+    if (st == 0 && !crealityDecode(old, &t)) {
+      // The same rule as above: data is only believed on a second read.
+      if (wakeCard(uid, uid_str, &silent) && !silent &&
+          nfcAuthMifareSector(1, FACTORY_KEY, uid, NFC_KEY_A)) {
+        st = readSector1(old);
+      } else {
+        st = -1;
+      }
     }
   }
   if (st < 0) {
@@ -544,5 +593,9 @@ int crealityProbeFactory(const uint8_t uid[4], const char* uid_str) {
          : half    ? "holds a CFS record that was never locked - treated as blank"
          : data == 0 ? "but sector 1 holds data"
                      : "but sector 1 could not be read", back);
-  return (data == 1 || half) ? CREALITY_FACTORY_BLANK : CREALITY_FACTORY_OPENS;
+  // Unread is kept apart from "holds data" (26.10.2026): a blank sticker that
+  // drops out mid read is still blank, and a caller that took it for data
+  // forgot that the tag had been blank and never offered the write again.
+  return (data == 1 || half) ? CREALITY_FACTORY_BLANK
+         : data < 0          ? CREALITY_FACTORY_UNREAD : CREALITY_FACTORY_OPENS;
 }
