@@ -947,10 +947,9 @@ static int bambuddyCreateUnderSpoolman(const TagCreateInput& in, const TagFilame
   // Ignored by BamBuddy once the id is set, but the request insists on one.
   ns.material     = in.material;
   ns.brand        = in.vendor;
-  // Only a real colour name (a Bambu tag's, from the catalog): a SpoolmanDB
-  // entry names no colour of its own, and BamBuddy derives the display from
-  // the Spoolman filament anyway, as it does for every other spool there.
-  ns.color_name   = in.color_name_en;
+  // A tag's colour name, else the database entry's: without one the spool's
+  // name on the scale and on its label ends before the colour.
+  ns.color_name   = tagCreateSpoolColorName(in);
   ns.label_weight = v.label_weight;
   // BamBuddy subtracts the spool's own core on its side, so the spool gets
   // what it is weighed against, whichever level it came from.

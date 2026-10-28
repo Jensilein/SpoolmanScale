@@ -211,3 +211,13 @@ void tagCreateSpoolmanName(const TagCreateInput& in, char* out, size_t out_size)
 void tagCreateFilamanColorName(const TagCreateInput& in, char* out, size_t out_size);
 void tagCreateFilamanDesignation(const TagCreateInput& in, char* out, size_t out_size);
 void tagCreateFilamanSubgroup(const TagCreateInput& in, char* out, size_t out_size);
+
+// The colour name a new spool gets through BamBuddy's Spoolman proxy. BamBuddy
+// keeps it on the spool, and the scale reads it back as the last part of the
+// spool's name ("PLA Basic Jade White") for the display and the labels. A
+// tag's own name wins (Bambu's, from the catalog); a spool picked from the
+// filament database has none and gets the entry's own name for the colour;
+// empty when neither is known.
+inline const char* tagCreateSpoolColorName(const TagCreateInput& in) {
+  return in.color_name_en[0] ? in.color_name_en : in.db_color_name;
+}
