@@ -1900,6 +1900,10 @@ enum StringID {
   STR_DENSITY_CHANGE,
   // Logs page: the session log on a page of its own
   STR_W_SESSION_OPEN,
+  // Tag view: write a CFS record onto a 4 byte MIFARE tag on request
+  STR_TV_CFS_WRITE,
+  STR_TW_CFS_RW_TITLE,
+  STR_TW_CFS_RW_HINT,
 
   STR_COUNT
 };

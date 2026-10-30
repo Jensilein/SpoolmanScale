@@ -46,7 +46,10 @@ static uint8_t  s_write_fmt     = 0;
 // and not on every poll. Cleared when that write found no tag, so putting the
 // spool back offers it again.
 static char     s_cfs_asked_uid[24] = "";
-// 0 = blank tag, 1 = own tag to update, 2 = original tag to overwrite.
+// 0 = blank tag, 1 = own tag to update, 2 = original tag to overwrite,
+// 3 = original tag to get the spool id, 4 = asked for from the tag view.
+// Anything but 0 lets the write go over a tag that opens with the Creality
+// key; mifareWrite() still leaves every other tag alone.
 static uint8_t  s_cfs_variant = 0;
 
 // While a CFS write waits for a tag that stopped answering: say so on the
@@ -318,6 +321,8 @@ void showTagWriteAskPopupFmt(int spool_id, uint8_t fmt, uint8_t variant) {
     buildAsk(STR_TW_CFS_OVR_TITLE, STR_TW_CFS_OVR_HINT, STR_TW_BTN_REWRITE, STR_TW_BTN_SKIP);
   else if (fmt == TAG_FMT_CREALITY && variant == 3)
     buildAsk(STR_TW_CFS_SID_TITLE, STR_TW_CFS_SID_HINT, STR_TW_BTN_REWRITE, STR_TW_BTN_SKIP);
+  else if (fmt == TAG_FMT_CREALITY && variant == 4)
+    buildAsk(STR_TW_CFS_RW_TITLE, STR_TW_CFS_RW_HINT, STR_TW_BTN_REWRITE, STR_TW_BTN_SKIP);
   else if (fmt == TAG_FMT_CREALITY)
     buildAsk(STR_TW_CFS_ASK_TITLE, STR_TW_CFS_ASK_HINT, STR_TW_BTN_WRITE, STR_TW_BTN_SKIP);
   else
