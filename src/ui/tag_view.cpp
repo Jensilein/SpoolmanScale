@@ -8,7 +8,9 @@
 #include "app/deferred_actions.h"
 #include "hardware/sd_logger.h"
 #include "services/tag_write.h"
+#include "services/tag_family.h"
 #include "services/user_options.h"
+#include "spoolman_lookup.h"
 #include "tag_write_popup.h"
 #include "theme.h"
 #include "ui_common.h"
@@ -68,6 +70,7 @@
 static lv_obj_t* s_view = nullptr;
 static bool s_erase_pending = false;
 static bool s_write_pending = false;
+static bool s_cfs_pending   = false;
 
 // What the card was built from. Taken on every pass and compared whole, and
 // the card is built again when anything in it differs: a tag put down or
@@ -82,6 +85,8 @@ struct Shown {
   bool     found;
   int      spool_id;
   char     spool_name[32];
+  bool     here;        // the shown tag is the one the scale reads right now
+  bool     looked_up;   // spool_id came from a lookup of this very tag
 };
 static Shown s_shown;
 
@@ -97,6 +102,8 @@ static void snapshot(Shown* s) {
   s->found     = sm_found && sm_id > 0;
   s->spool_id  = s->found ? sm_id : 0;
   if (s->found) snprintf(s->spool_name, sizeof(s->spool_name), "%s", sm_filament_name);
+  s->here      = s->uid[0] && strcmp(s->uid, g_tag.uid_str) == 0;
+  s->looked_up = s->found && s->uid[0] && lookupWasFor(s->uid);
 }
 
 bool isTagViewOpen() { return s_view != nullptr; }
@@ -104,6 +111,7 @@ bool isTagViewOpen() { return s_view != nullptr; }
 void closeTagView() {
   s_erase_pending = false;
   s_write_pending = false;
+  s_cfs_pending   = false;
   releaseScreen(&s_view);
 }
 
@@ -116,6 +124,7 @@ static void dropView() {
 static void closeCb(lv_event_t* e)  { closeTagView(); }
 static void eraseCb(lv_event_t* e)  { s_erase_pending = true; }
 static void writeCb(lv_event_t* e)  { s_write_pending = true; }
+static void cfsCb(lv_event_t* e)    { s_cfs_pending = true; }
 
 // ---- pieces --------------------------------------------------
 
@@ -426,11 +435,50 @@ static lv_obj_t* button(lv_obj_t* box, int x, const char* text, bool danger,
   return b;
 }
 
+// A 4 byte MIFARE tag cannot take an NTAG record, but with Creality tags on
+// it can take a CFS record: blank stickers and Creality's own tags. The scale
+// offers that by itself after a link or when a tag of ours is out of date -
+// but not for a tag it could not read at the time, and an original tag that
+// dropped out while it was linked was left with the old filament on it and no
+// way to write it from the scale (26.10.2026, spool 38). Offered only for a
+// tag known blank, known Creality's or not settled yet, and never for one
+// that decoded as Bambu's or Snapmaker's: those are signed or carry their
+// maker's record, and stay read only.
+static bool cfsOffered(const Shown& s) {
+  if (s.kind != TAG_KIND_MIFARE || !g_creality_tags) return false;
+  if (!strcmp(s.info.fmt, "Bambu") || !strcmp(s.info.fmt, "Snapmaker")) return false;
+  unsigned b[4];
+  if (sscanf(s.uid, "%2x:%2x:%2x:%2x", &b[0], &b[1], &b[2], &b[3]) != 4) return false;
+  const uint8_t u[4] = {(uint8_t)b[0], (uint8_t)b[1], (uint8_t)b[2], (uint8_t)b[3]};
+  const TagFamily f = tagFamilyGet(u);
+  return f == TAG_FAMILY_BLANK || f == TAG_FAMILY_CREALITY || f == TAG_FAMILY_UNKNOWN;
+}
+
+// The write goes to the tag the scale reads right now, for the spool its own
+// lookup found: the card may still show a tag the reader has just lost, or
+// the spool of the tag before. Inert until both hold, and the caption says
+// what is missing.
+static bool cfsReady(const Shown& s) { return s.found && s.here && s.looked_up; }
+
+static void cfsButton(lv_obj_t* box, const Shown& s) {
+  char cfs[40];
+  if (!s.found)          copyT(cfs, sizeof(cfs), STR_TV_NOSPOOL);
+  else if (!s.here)      copyT(cfs, sizeof(cfs), STR_TV_CFS_NOT_HERE);
+  else if (!s.looked_up) copyT(cfs, sizeof(cfs), STR_WAIT);
+  else                   snprintf(cfs, sizeof(cfs), T(STR_TV_CFS_WRITE), s.spool_id);
+  button(box, (TV_BOX_W - TV_BTN_W) / 2, cfs, false, cfsReady(s), cfsCb);
+}
+
 // Erase and write for an NTAG. A MIFARE tag can only be read, and the row
 // says so instead; with no tag there is nothing to act on.
 static void buildButtons(lv_obj_t* box, const Shown& s) {
   if (!s.reader_ok || !s.uid[0]) return;
   divider(box, TV_DIV2_Y);
+
+  if (cfsOffered(s)) {
+    cfsButton(box, s);
+    return;
+  }
 
   if (s.kind != TAG_KIND_NTAG) {
     lv_obj_t* l = lv_label_create(box);
@@ -511,20 +559,47 @@ static void build() {
   logLvMem("tagview/post", 1);
 }
 
+// The CFS button was tapped. Between the tap and this pass the tag may have
+// gone or the lookup moved on to another tag: the question is only asked when
+// the tag and its spool are still the ones the button named, and the write is
+// tied to that tag's UID. Otherwise the card is built again as it is now.
+static void askCfsWrite() {
+  Shown now;
+  snapshot(&now);
+  if (!cfsReady(now) || strcmp(now.uid, s_shown.uid) != 0 || now.spool_id != s_shown.spool_id) {
+    logSDf("TAGVIEW: CFS write not asked - tag %s / spool %d changed to %s / %d",
+           s_shown.uid, s_shown.spool_id, now.uid[0] ? now.uid : "-", now.spool_id);
+    memcpy(&s_shown, &now, sizeof(now));
+    dropView();
+    build();
+    return;
+  }
+  dropView();
+  logSDf("TAGVIEW: CFS write asked, spool %d, tag %s", s_shown.spool_id, s_shown.uid);
+  // Variant 4: its own question, and a tag that opens with the Creality key
+  // is written over too. mifareWrite() leaves any other tag alone.
+  showTagWriteAskPopupFmt(s_shown.spool_id, TAG_FMT_CREALITY, 4, s_shown.uid);
+}
+
+static void openView() {
+  snapshot(&s_shown);
+  dropView();
+  build();
+  logSDf("TAGVIEW: open, uid=%s fmt=%s spool=%d", s_shown.uid[0] ? s_shown.uid : "-",
+         s_shown.info.fmt[0] ? s_shown.info.fmt : "-", s_shown.spool_id);
+}
+
 void handleTagViewDeferredActions() {
   if (show_tag_view_pending) {
     show_tag_view_pending = false;
-    snapshot(&s_shown);
-    dropView();
-    build();
-    logSDf("TAGVIEW: open, uid=%s fmt=%s spool=%d", s_shown.uid[0] ? s_shown.uid : "-",
-           s_shown.info.fmt[0] ? s_shown.info.fmt : "-", s_shown.spool_id);
+    openView();
     return;
   }
 
   if (!s_view) {
     s_erase_pending = false;
     s_write_pending = false;
+    s_cfs_pending   = false;
     return;
   }
 
@@ -536,6 +611,11 @@ void handleTagViewDeferredActions() {
     dropView();
     logSD("TAGVIEW: erase asked");
     askTagEraseFromView();
+    return;
+  }
+  if (s_cfs_pending) {
+    s_cfs_pending = false;
+    askCfsWrite();
     return;
   }
   if (s_write_pending) {

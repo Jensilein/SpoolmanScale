@@ -1943,6 +1943,10 @@ enum StringID {
   STR_NEWSPOOL_HINT_WRITE,    // its sentence without a printer
   STR_NEWSPOOL_HINT_LABEL,    // its sentence with a label printer
   STR_NEWSPOOL_HINT_NOT_SHOWN,// its sentence when the new spool is not on the display
+  STR_TV_CFS_WRITE,
+  STR_TW_CFS_RW_TITLE,
+  STR_TW_CFS_RW_HINT,
+  STR_TV_CFS_NOT_HERE,
   STR_COUNT
 };
 
