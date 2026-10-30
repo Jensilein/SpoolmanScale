@@ -7,6 +7,7 @@
 #include <strings.h>
 
 #include "../hardware/sd_logger.h"
+#include "density_rules.h"
 #include "spoolman_api.h"
 #include "spoolman_filament_db.h"
 
@@ -300,6 +301,65 @@ static float materialDensity(const char* base_url, const char* material) {
   return 0.0f;
 }
 
+// The density of one database entry when it is the tag's product, else 0.
+static float entryProductDensity(JsonObjectConst e, const DensityProduct& want) {
+  const float d = e["density"] | 0.0f;
+  if (!densityPlausible(d)) return 0.0f;
+  const int weight_g = (int)lroundf(e["weight"] | 0.0f);
+  return densityEntryIsProduct(e["manufacturer"] | "", e["name"] | "", weight_g, want) ? d : 0.0f;
+}
+
+struct ProductDensityScan {
+  DensityProduct want;
+  float          density;
+  char           name[48];  // the entry it came from, for the log; copied,
+                            // the document it was read from is gone by then
+};
+
+static void scanProductDensity(JsonObjectConst e, void* p) {
+  ProductDensityScan* scan = (ProductDensityScan*)p;
+  if (scan->density > 0.0f) return;
+  scan->density = entryProductDensity(e, scan->want);
+  if (scan->density > 0.0f) snprintf(scan->name, sizeof(scan->name), "%s", e["name"] | "");
+}
+
+// The density of the database entry that carries the tag's product name, 0
+// if there is none. A Bambu support tag names its material ABS-S, which
+// neither the database nor Spoolman's material list knows; the database has
+// the product as "Support for ABS", material ABS. Only the density is taken:
+// the filament is still made from the tag, with the tag's material.
+static float productDensity(const char* base_url, const TagCreateInput& in) {
+  if (!in.product[0]) return 0.0f;
+  ProductDensityScan scan = { { in.vendor, in.product, in.net_weight_g }, 0.0f, "" };
+  const SmFdbForm form = spoolmanFdbForm(base_url);
+  if (form == SM_FDB_LIGHT) {
+    // No word search there: the maker's list of the material the product is
+    // filed under, known for the support codes only.
+    const char* base = densitySupportBase(in.material);
+    if (!base) return 0.0f;
+    const int code = spoolmanFdbEachOf(base_url, in.vendor, base, scanProductDensity, &scan);
+    if (code != 200) logSDf("Spoolman: filament database list by product -> HTTP %d", code);
+  } else if (form == SM_FDB_SPOOLMAN) {
+    JsonDocument filter;
+    JsonObject f = filter.to<JsonArray>().add<JsonObject>();
+    f["manufacturer"] = true;
+    f["name"]         = true;
+    f["weight"]       = true;
+    f["density"]      = true;
+    const String words = String(in.vendor) + " " + in.product;
+    const String path = String("/api/v1/external/filament/search?limit=") + SM_FIL_DB_LIMIT +
+                        "&query=" + spoolmanUrlEncode(words.c_str());
+    JsonDocument doc;
+    const int code = spoolmanGetJson(base_url, path.c_str(), doc, SM_FIL_DB_TIMEOUT_MS, &filter);
+    if (code != 200) logSDf("Spoolman: filament database search by product -> HTTP %d", code);
+    else for (JsonObjectConst e : doc.as<JsonArrayConst>()) scanProductDensity(e, &scan);
+  }
+  if (scan.density > 0.0f)
+    logSDf("Spoolman: density %.2f for %s from the database entry \"%s\"",
+           scan.density, in.material, scan.name);
+  return scan.density;
+}
+
 // The vendor's id, 0 when the inventory has none yet; -1 when the server
 // could not be asked, its code in the plan.
 static int findVendor(const char* base_url, const char* vendor, TagFilamentPlan* plan) {
@@ -346,6 +406,7 @@ static void planFromTag(const char* base_url, const TagCreateInput& in, TagFilam
   if (!in.names_known || (!in.color_count && !in.clear)) { plan->state = TFS_NEEDS_CATALOG; return; }
   plan->density = databaseDensity(base_url, in.vendor, in.material);
   if (plan->density <= 0.0f) plan->density = materialDensity(base_url, in.material);
+  if (plan->density <= 0.0f) plan->density = productDensity(base_url, in);
   if (plan->density <= 0.0f) {
     logSDf("Spoolman: no density known for %s, filament not created", in.material);
     plan->state = TFS_FAILED;
