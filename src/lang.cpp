@@ -4145,6 +4145,9 @@ const char* const STRINGS[][3] = {
     "Utiliser" },  // STR_DENSITY_TAKE
   { "Ändern", "Change",
     "Modifier" },  // STR_DENSITY_CHANGE
+  // Weight button (weight_button.cpp): a tag is read but the pad weighs too
+  // little for its spool, so nothing is written.
+  { "Spule fehlt", "No spool", "Pas de bobine" },  // STR_WB_NO_SPOOL
 };
 
 StringID tagWriteResultString(uint8_t code) {

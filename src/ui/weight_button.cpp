@@ -59,6 +59,9 @@ static void captionFor(WeightLook look, float grams, char *buf, size_t len) {
       snprintf(num, sizeof(num), T(STR_WB_RISE), grams);
       snprintf(buf, len, LV_SYMBOL_WARNING "  %s", num);
       return;
+    case WL_NO_SPOOL:
+      snprintf(buf, len, LV_SYMBOL_WARNING "  %s", T(STR_WB_NO_SPOOL));
+      return;
     case WL_MANUAL:
     default:
       copyT(buf, len, STR_BTN_WEIGHT);
@@ -125,6 +128,10 @@ void weightButtonIdle() {
 }
 
 WeightLook weightButtonLook() { return s_look; }
+
+void weightButtonIdleIfWaiting() {
+  if (s_look == WL_COUNTING || s_look == WL_NO_SPOOL) weightButtonIdle();
+}
 
 void autoWeightSwitch(bool on) {
   g_auto_weight = on;

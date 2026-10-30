@@ -31,3 +31,17 @@ extern bool auto_weight_done;
 // own. Filament only ever leaves a spool; more weight means a bag, another
 // spool, or a refill, and the user is asked (Nikolai, 26.10.2026: 5 g).
 #define AUTO_WEIGHT_RISE_G 5.0f
+// Below this much nothing is on the pad, whatever the spool: a tag held to
+// the reader alone reads a few grams of drift at most.
+#define AUTO_WEIGHT_EMPTY_PAD_G 20.0f
+// A spool weighed empty reads within this much under its own measured empty
+// weight (scale drift, a spool that lost a few grams of label or dust).
+#define AUTO_WEIGHT_UNDER_TARE_G 15.0f
+
+// True while the pad holds too little for the spool to be on it: less than
+// AUTO_WEIGHT_EMPTY_PAD_G, or, when the empty weight was measured for this
+// very spool (own_tare), less than it by more than AUTO_WEIGHT_UNDER_TARE_G.
+// A filament's or vendor's default empty weight is only a guess - a lighter
+// cardboard spool of the same filament is normal - so only the absolute floor
+// applies then. Nothing is written while this holds.
+bool autoWeightPadTooLight(float grams, float spool_weight_g, bool own_tare);

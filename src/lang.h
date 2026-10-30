@@ -1898,6 +1898,8 @@ enum StringID {
   STR_DENSITY_PAD_TYPICAL,
   STR_DENSITY_TAKE,
   STR_DENSITY_CHANGE,
+  // Weight button: a tag is read but the pad is too light for its spool
+  STR_WB_NO_SPOOL,
 
   STR_COUNT
 };

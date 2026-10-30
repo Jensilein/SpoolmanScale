@@ -233,6 +233,18 @@ static bool weightSaysSpoolStayed() {
 static bool aw_adopted      = false;
 static bool aw_adopted_seen = false;   // a real load has been on the pad since
 
+// The pad is too light for the spool whose tag is read: say so on the button,
+// and in the log once per spool.
+static void autoWeightNoSpool(float gross) {
+  static int logged_id = 0;
+  if (logged_id != sm_id) {
+    logSDf("Auto-Weight: %.0f g is too light for spool %d (empty weight %d g, %s) - not on the pad, nothing written",
+           gross, sm_id, (int)sm_spool_weight, sm_tare_source == TARE_SPOOL ? "own" : "default");
+    logged_id = sm_id;
+  }
+  weightButtonShow(WL_NO_SPOOL);
+}
+
 // The spool has lain still long enough. What happens to the reading depends
 // on how it compares with what the backend holds (Nikolai, 26.10.2026):
 // heavier by more than AUTO_WEIGHT_RISE_G is held back and the button asks,
@@ -1619,7 +1631,15 @@ void appLoop() {
         // countdown already on the button goes back to the waiting look.
         auto_weight_last_val = cur;
         auto_weight_stable_ms = now;
-        if (weightButtonLook() == WL_COUNTING) weightButtonIdle();
+        weightButtonIdleIfWaiting();
+      } else if (autoWeightPadTooLight(cur, (float)sm_spool_weight, sm_tare_source == TARE_SPOOL)) {
+        // A tag held to the reader without its spool - a loose sticker, a
+        // spool tilted off the pad - reads as present over an empty pad, and
+        // used to file the spool as 0 g (16.10.2026, spool 27). No countdown,
+        // nothing written: the button says the spool is missing, and the
+        // window starts again with the next reading.
+        autoWeightNoSpool(cur);
+        auto_weight_stable_ms = now;
       } else {
         const unsigned long still_ms = now - auto_weight_stable_ms;
         if (still_ms >= AUTO_WEIGHT_QUIET_MS + AUTO_WEIGHT_STABLE_MS) {
@@ -1640,7 +1660,7 @@ void appLoop() {
       if (auto_weight_stable_ms > 0) {
         auto_weight_stable_ms = 0;
         auto_weight_last_val = -9999.0f;
-        if (weightButtonLook() == WL_COUNTING) weightButtonIdle();
+        weightButtonIdleIfWaiting();
       }
     } else if (!auto_weight_done && !tag_present && !idSpoolActive()) {
       // No spool, no countdown: the idle look.
