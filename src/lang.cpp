@@ -4145,6 +4145,10 @@ const char* const STRINGS[][3] = {
     "Utiliser" },  // STR_DENSITY_TAKE
   { "Ändern", "Change",
     "Modifier" },  // STR_DENSITY_CHANGE
+  // Logs page: the session log on a page of its own
+  { "Auf eigener Seite öffnen",
+    "Open on its own page",
+    "Ouvrir dans une page à part" },  // STR_W_SESSION_OPEN
 };
 
 StringID tagWriteResultString(uint8_t code) {

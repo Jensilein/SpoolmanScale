@@ -1898,6 +1898,8 @@ enum StringID {
   STR_DENSITY_PAD_TYPICAL,
   STR_DENSITY_TAKE,
   STR_DENSITY_CHANGE,
+  // Logs page: the session log on a page of its own
+  STR_W_SESSION_OPEN,
 
   STR_COUNT
 };
