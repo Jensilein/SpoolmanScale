@@ -99,6 +99,8 @@ enum MifareFactoryProbe {
   MIFARE_FACTORY_REFUSED = 0,  // other keys: the usual probes decide
   MIFARE_FACTORY_OPENS   = 1,  // factory key, but data in it, or unreadable
   MIFARE_FACTORY_BLANK   = 2,  // factory key and empty: ready for a write
+  MIFARE_FACTORY_UNREAD  = 3,  // factory key, but the data blocks did not read:
+                               // a weak read, says nothing about the contents
 };
 // unfinished, when given, recognises a record a write of ours left on the
 // factory key because it stopped before the trailer: such a tag counts as
