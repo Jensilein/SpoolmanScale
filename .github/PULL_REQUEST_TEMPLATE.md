@@ -1,4 +1,4 @@
-<!-- Please read .github/CONTRIBUTING.md first. Pull requests go to `dev`. -->
+<!-- Please read .github/CONTRIBUTING.md first (coding agents: AGENTS.md). Pull requests go to `dev`. -->
 
 ## What and why
 
@@ -18,7 +18,7 @@ Related issue: #
 - Real NFC tag / load cell used: yes / no / not touched
 - What I tested:
 
-<!-- Display change: phone photo of the screen before and after.
+<!-- Display change: screenshots before and after (web interface, Logs page).
      Web page change: browser screenshot before and after. -->
 
 ## Checklist
@@ -26,6 +26,7 @@ Related issue: #
 - [ ] Based on a fresh `dev`, one topic, no unrelated changes
 - [ ] `scripts/check.sh` is green and `pio run` builds
 - [ ] I searched for every caller of what I changed
+- [ ] The diff was reviewed by a second, independent reviewer before opening this
 - [ ] New texts go through `T()`, with German, English and French
 - [ ] Version not bumped (the maintainer does that)
 - [ ] Manual (SpoolmanScale-Docs) needs an update: yes / no, because:

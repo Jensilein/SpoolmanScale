@@ -9,8 +9,8 @@ every change is only really proven on a real scale. Most of the rules below
 exist because a past pull request broke something on the device, so each one
 comes with its reason.
 
-If a tool writes code for you, point it at this file and let it run
-`scripts/check.sh` until it is green.
+**Working with a coding agent?** Let it read [AGENTS.md](../AGENTS.md) first.
+It holds the exact house rules, where new code goes, and the checks to run.
 
 ## Before you start
 
@@ -63,62 +63,10 @@ finding. CI runs the same script plus the build on every pull request.
 
 ## House rules
 
-Only the rules that pull requests actually ran into. `scripts/check.sh` checks
-most of them.
-
-**Texts and languages**
-
-- Every text on the display or in the web interface goes through
-  `T(STR_XXX)`, also one that reads the same in every language. No literals.
-- A new text is a new row **at the end** of `src/lang.h` and `src/lang.cpp`,
-  with German, English and French:
-  `python3 tools/lang_fr.py seed`, `apply`, `emit`. The steps are in
-  [tools/FRENCH_TRANSLATION.md](../tools/FRENCH_TRANSLATION.md#add-a-new-text).
-  There is no later review, so translate from where the text sits in the
-  code, not word by word, and keep it no wider than German and English.
-- German uses real umlauts (`ä ö ü ß`), not `ae oe ue ss`.
-- A conflict in `src/lang.cpp` is never resolved by keeping both sides: that
-  duplicates rows. Take `dev`'s version and re-add your rows.
-
-**Display (LVGL)**
-
-- Colours, radii and fonts come from `src/ui/theme.h`. A new colour gets a name
-  in `src/ui/theme_palette.h` first.
-- An event handler never does HTTP, never blocks and never deletes its own
-  object: it sets a `*_pending` flag in `src/app/deferred_actions.h`, and
-  `src/app/app_loop.cpp` does the work. HTTP there freezes the screen, a delete
-  there can crash the scale.
-- Never `lv_scr_load()`: it reboots. Screens are overlays.
-- The display memory is nearly full. Build a screen when it opens, not at boot.
-
-**NFC and I2C**
-
-- The NFC reader and the scale share one I2C bus that belongs to the main loop.
-  A web handler never touches it: it parks a request, the loop carries it out.
-- Writing to a tag goes through `src/services/tag_write.cpp` only. Pages below
-  4 are never written: a wrong byte there turns the tag into scrap.
-- A change to the NFC or I2C path is tested with a real tag on a real scale.
-
-**Web interface**
-
-- Every route checks its gate with `webRequire()`.
-- Every `fetch` gets a `.catch`: a closed gate answers 403 as plain text.
-- Page scripts bind listeners after rendering, never through HTML attributes
-  like `onclick`. They sit inside a C++ string literal, where one syntax error
-  silently kills the whole script.
-
-**Backends**
-
-- UI code calls `src/services/backend_api.h` and nothing behind it. A request
-  specific to one backend goes into that backend's file.
-
-**Code**
-
-- Comments are English. No em-dash anywhere: the compiler and the display both
-  choke on it, use " - ".
-- No magic numbers: a `#define` for timeouts, limits and sizes.
-- Handle the error of every external call (HTTP, NVS, SD card, I2C).
-- A new file stays under 1000 lines.
+The house rules, with their reasons, are in [AGENTS.md](../AGENTS.md#house-rules):
+texts through `T()` in three languages, colours from `src/ui/theme.h`, no HTTP
+in an event handler, the NFC bus belongs to the main loop, and more.
+`scripts/check.sh` checks most of them.
 
 ## Testing
 
@@ -127,9 +75,9 @@ FilaMan or BamBuddy). A successful build proves little on this device. If you
 had no hardware for a part of the change, say so; that is fine, it just tells
 the maintainer what to test.
 
-**Screenshots:** the device cannot take screenshots yet. For a change on the
-display, attach a phone photo of the screen before and after. For a web page, a
-browser screenshot.
+**Screenshots:** for a change on the display, take screenshots before and after
+on the web interface (Logs page) and attach them. For a web page, a browser
+screenshot.
 
 ## Commits and the pull request text
 
