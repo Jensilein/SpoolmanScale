@@ -18,8 +18,9 @@
 //    keys are derived per tag and no format here knows them, so a Bambu tag
 //    could not be opened anyway; the family check makes that explicit.
 //  - Written only when the sector opens with the factory key and its data
-//    blocks are empty, or when it opens with the format's own key and the
-//    caller asked for an overwrite. Anything else is left as it is.
+//    blocks are empty (or hold the format's own record from a write that
+//    stopped before the trailer), or when it opens with the format's own key
+//    and the caller asked for an overwrite. Anything else is left as it is.
 //  - A sector trailer is written by this file alone, only on a blank tag, and
 //    only with the transport access bits. It goes last, so a write that stops
 //    part way leaves a tag that is still on the factory key.
@@ -56,6 +57,10 @@ struct MifareWriteJob {
   // Remembered for the UID once the format's record is on the tag.
   TagFamily   family;
 };
+
+// The data blocks of the job's sector hold one record of a format. The same
+// shape as MifareWriteJob::is_own_record.
+typedef bool (*MifareRecordFn)(const uint8_t blocks[MIFARE_DATA_BLOCKS_MAX][MIFARE_BLOCK_BYTES]);
 
 enum MifareWriteResult {
   MIFARE_WRITE_OK,
@@ -95,4 +100,8 @@ enum MifareFactoryProbe {
   MIFARE_FACTORY_OPENS   = 1,  // factory key, but data in it, or unreadable
   MIFARE_FACTORY_BLANK   = 2,  // factory key and empty: ready for a write
 };
-int mifareProbeFactory(const uint8_t uid[4], const char* uid_str);
+// unfinished, when given, recognises a record a write of ours left on the
+// factory key because it stopped before the trailer: such a tag counts as
+// blank, the write finishes it.
+int mifareProbeFactory(const uint8_t uid[4], const char* uid_str,
+                       MifareRecordFn unfinished = nullptr);

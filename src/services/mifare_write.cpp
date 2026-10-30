@@ -333,15 +333,30 @@ static MifareWriteResult writeBlank(const WriteRun& run) {
   memcpy(uid, run.uid, 4);
   bool silent = false;
   const uint8_t first = firstBlock(job.sector);
+  uint8_t old[MIFARE_DATA_BLOCKS_MAX][MIFARE_BLOCK_BYTES];
+  bool has_data = false;
   for (uint8_t b = 0; b < MIFARE_DATA_BLOCKS_MAX; b++) {
-    uint8_t old[MIFARE_BLOCK_BYTES];
-    const bool readable = nfcReadMifareBlock(first + b, old);
-    if (!readable || !blockIsBlank(old)) {
-      logSDf("%s write: %s block %u %s - not written", job.label, uid_str,
-             (unsigned)(first + b), readable ? "holds data" : "unreadable");
+    if (!nfcReadMifareBlock(first + b, old[b])) {
+      logSDf("%s write: %s block %u unreadable - not written", job.label, uid_str,
+             (unsigned)(first + b));
       mifareWakeCard(uid, uid_str, &silent);
-      return readable ? MIFARE_WRITE_NOT_BLANK : MIFARE_WRITE_FAILED;
+      return MIFARE_WRITE_FAILED;
     }
+    if (!blockIsBlank(old[b])) has_data = true;
+  }
+  if (has_data) {
+    // Only the format's own record still on the factory key may be written
+    // over: a write of ours that stopped before the trailer (17.10.2026,
+    // 00:DF:A7:2E on spool 28: the sticker dropped out mid write and was
+    // 'holds data' for good after that). Anything else stays untouched.
+    if (!job.set_trailer || !job.is_own_record(old)) {
+      logSDf("%s write: %s sector %u holds data - not written", job.label, uid_str,
+             (unsigned)job.sector);
+      mifareWakeCard(uid, uid_str, &silent);
+      return MIFARE_WRITE_NOT_BLANK;
+    }
+    logSDf("%s write: %s holds an unlocked record (earlier write cut short) - writing it again",
+           job.label, uid_str);
   }
   int refused = -1;
   if (!writeDataBlocks(job, &refused)) {
@@ -414,7 +429,7 @@ MifareWriteResult mifareWrite(const MifareWriteJob& job, uint8_t uid_out[4],
   return writeBlank(run);
 }
 
-int mifareProbeFactory(const uint8_t uid[4], const char* uid_str) {
+int mifareProbeFactory(const uint8_t uid[4], const char* uid_str, MifareRecordFn unfinished) {
   bool silent = false;
   if (!nfcAuthMifareSector(PROBE_SECTOR, FACTORY_KEY, uid, NFC_KEY_A)) {
     const int w = mifareWakeCard(uid, uid_str, &silent);   // for whichever probe comes next
@@ -427,21 +442,28 @@ int mifareProbeFactory(const uint8_t uid[4], const char* uid_str) {
   // opened and then read nothing, and went to the Bambu probe as "holds
   // data"). So a failed read gets one more go after a wake.
   int data = -1;   // -1 unread, 0 holds data, 1 blank
+  uint8_t blk[MIFARE_DATA_BLOCKS_MAX][MIFARE_BLOCK_BYTES];
   for (int attempt = 0; attempt < PROBE_READ_TRIES && data < 0; attempt++) {
     if (attempt > 0 && (!mifareWakeCard(uid, uid_str, &silent) ||
                         !nfcAuthMifareSector(PROBE_SECTOR, FACTORY_KEY, uid, NFC_KEY_A))) break;
     int blank = 1;
-    for (uint8_t b = 0; b < MIFARE_DATA_BLOCKS_MAX && blank == 1; b++) {
-      uint8_t d[MIFARE_BLOCK_BYTES];
-      if (!nfcReadMifareBlock(firstBlock(PROBE_SECTOR) + b, d)) blank = -1;
-      else if (!blockIsBlank(d)) blank = 0;
+    for (uint8_t b = 0; b < MIFARE_DATA_BLOCKS_MAX && blank >= 0; b++) {
+      if (!nfcReadMifareBlock(firstBlock(PROBE_SECTOR) + b, blk[b])) blank = -1;
+      else if (!blockIsBlank(blk[b])) blank = 0;
     }
     data = blank;
   }
+  // A record of ours on the factory key is a write that stopped before the
+  // trailer took (17.10.2026, 00:DF:A7:2E on spool 28: the sticker dropped
+  // out mid write and was then "holds data" for good, so the scale never
+  // offered it again). Ours to finish: treated as blank.
+  const bool half = data == 0 && unfinished && unfinished(blk);
   // After an authentication the card does not answer the next poll.
   const int back = silent ? 0 : mifareWakeCard(uid, uid_str, &silent);
   logSDf("NFC: %s opens with the factory key, %s (woke=%d)", uid_str,
-         data == 1 ? "blank" : data == 0 ? "but sector 1 holds data"
-                                         : "but sector 1 could not be read", back);
-  return data == 1 ? MIFARE_FACTORY_BLANK : MIFARE_FACTORY_OPENS;
+         data == 1   ? "blank"
+         : half      ? "holds a record that was never locked - treated as blank"
+         : data == 0 ? "but sector 1 holds data"
+                     : "but sector 1 could not be read", back);
+  return (data == 1 || half) ? MIFARE_FACTORY_BLANK : MIFARE_FACTORY_OPENS;
 }
