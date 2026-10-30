@@ -32,6 +32,8 @@ static constexpr unsigned long PUT_DOWN_SETTLE_MS = 700;
 // A tag found blank this session that refuses the factory key now and then.
 static constexpr int           BLANK_ASK_AGAIN    = 2;
 static constexpr int           PROBE_READ_TRIES   = 2;
+// "Holds data" is believed once this many reads say so (17.10.2026).
+static constexpr int           PROBE_DATA_READS   = 2;
 
 static uint8_t firstBlock(uint8_t sector)   { return sector * BLOCKS_PER_SECTOR; }
 static uint8_t trailerBlock(uint8_t sector) { return sector * BLOCKS_PER_SECTOR + 3; }
@@ -42,6 +44,20 @@ static bool blockIsBlank(const uint8_t b[MIFARE_BLOCK_BYTES]) {
   if (first != 0x00 && first != 0xFF && first != 0x20) return false;
   for (int i = 1; i < MIFARE_BLOCK_BYTES; i++) if (b[i] != first) return false;
   return true;
+}
+
+// The data blocks of a sector that is already open: 1 all blank, 0 data in
+// them, -1 a read failed. A sticker on the edge of the field can hand back a
+// block that is not what it holds (17.10.2026, 6D:7B:DB:4F: "holds data"
+// once, blank half a minute later, never written in between), so callers
+// only believe "data" once a second read after a fresh wake says the same.
+static int readDataBlocks(uint8_t sector, uint8_t blk[MIFARE_DATA_BLOCKS_MAX][MIFARE_BLOCK_BYTES]) {
+  int r = 1;
+  for (uint8_t b = 0; b < MIFARE_DATA_BLOCKS_MAX; b++) {
+    if (!nfcReadMifareBlock(firstBlock(sector) + b, blk[b])) return -1;
+    if (!blockIsBlank(blk[b])) r = 0;
+  }
+  return r;
 }
 
 static bool samePoll(const uint8_t uid[4], uint16_t timeout_ms) {
@@ -332,19 +348,29 @@ static MifareWriteResult writeBlank(const WriteRun& run) {
   uint8_t uid[4];
   memcpy(uid, run.uid, 4);
   bool silent = false;
-  const uint8_t first = firstBlock(job.sector);
   uint8_t old[MIFARE_DATA_BLOCKS_MAX][MIFARE_BLOCK_BYTES];
-  bool has_data = false;
-  for (uint8_t b = 0; b < MIFARE_DATA_BLOCKS_MAX; b++) {
-    if (!nfcReadMifareBlock(first + b, old[b])) {
-      logSDf("%s write: %s block %u unreadable - not written", job.label, uid_str,
-             (unsigned)(first + b));
-      mifareWakeCard(uid, uid_str, &silent);
-      return MIFARE_WRITE_FAILED;
+  int st = readDataBlocks(job.sector, old);
+  if (st == 0 && !(job.set_trailer && job.is_own_record(old))) {
+    // Data that is no record of ours: read once more after a fresh wake
+    // before refusing (see readDataBlocks).
+    if (mifareWakeCard(uid, uid_str, &silent) && !silent &&
+        nfcAuthMifareSector(job.sector, FACTORY_KEY, uid, NFC_KEY_A)) {
+      st = readDataBlocks(job.sector, old);
+      if (st == 1) {
+        logSDf("%s write: %s read as holding data, blank on the second read - writing",
+               job.label, uid_str);
+      }
+    } else {
+      st = -1;
     }
-    if (!blockIsBlank(old[b])) has_data = true;
   }
-  if (has_data) {
+  if (st < 0) {
+    logSDf("%s write: %s sector %u unreadable - not written", job.label, uid_str,
+           (unsigned)job.sector);
+    mifareWakeCard(uid, uid_str, &silent);
+    return MIFARE_WRITE_FAILED;
+  }
+  if (st == 0) {
     // Only the format's own record still on the factory key may be written
     // over: a write of ours that stopped before the trailer (17.10.2026,
     // 00:DF:A7:2E on spool 28: the sticker dropped out mid write and was
@@ -440,24 +466,31 @@ int mifareProbeFactory(const uint8_t uid[4], const char* uid_str, MifareRecordFn
   // be read too. A read that fails says nothing about them (13.10.2026: a
   // blank sticker, half off the reader after the refused Creality key,
   // opened and then read nothing, and went to the Bambu probe as "holds
-  // data"). So a failed read gets one more go after a wake.
-  int data = -1;   // -1 unread, 0 holds data, 1 blank
-  uint8_t blk[MIFARE_DATA_BLOCKS_MAX][MIFARE_BLOCK_BYTES];
-  for (int attempt = 0; attempt < PROBE_READ_TRIES && data < 0; attempt++) {
-    if (attempt > 0 && (!mifareWakeCard(uid, uid_str, &silent) ||
-                        !nfcAuthMifareSector(PROBE_SECTOR, FACTORY_KEY, uid, NFC_KEY_A))) break;
-    int blank = 1;
-    for (uint8_t b = 0; b < MIFARE_DATA_BLOCKS_MAX && blank >= 0; b++) {
-      if (!nfcReadMifareBlock(firstBlock(PROBE_SECTOR) + b, blk[b])) blank = -1;
-      else if (!blockIsBlank(blk[b])) blank = 0;
-    }
-    data = blank;
-  }
+  // data"). So a failed read gets another go after a wake.
   // A record of ours on the factory key is a write that stopped before the
   // trailer took (17.10.2026, 00:DF:A7:2E on spool 28: the sticker dropped
   // out mid write and was then "holds data" for good, so the scale never
-  // offered it again). Ours to finish: treated as blank.
-  const bool half = data == 0 && unfinished && unfinished(blk);
+  // offered it again). Ours to finish: treated as blank. Other data is only
+  // believed on a second read (see readDataBlocks).
+  int data = -1;   // -1 unread, 0 holds data, 1 blank
+  bool half = false;
+  int data_reads = 0;
+  uint8_t blk[MIFARE_DATA_BLOCKS_MAX][MIFARE_BLOCK_BYTES];
+  for (int attempt = 0; attempt < PROBE_READ_TRIES + 1; attempt++) {
+    if (attempt > 0 && (!mifareWakeCard(uid, uid_str, &silent) || silent ||
+                        !nfcAuthMifareSector(PROBE_SECTOR, FACTORY_KEY, uid, NFC_KEY_A))) break;
+    data = readDataBlocks(PROBE_SECTOR, blk);
+    if (data == 1) {
+      if (data_reads > 0) {
+        logSDf("NFC: %s showed data on one read, blank on the next - weak read", uid_str);
+      }
+      break;
+    }
+    if (data == 0) {
+      half = unfinished && unfinished(blk);
+      if (half || ++data_reads >= PROBE_DATA_READS) break;
+    }
+  }
   // After an authentication the card does not answer the next poll.
   const int back = silent ? 0 : mifareWakeCard(uid, uid_str, &silent);
   logSDf("NFC: %s opens with the factory key, %s (woke=%d)", uid_str,
