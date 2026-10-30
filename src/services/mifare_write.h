@@ -18,8 +18,9 @@
 //    keys are derived per tag and no format here knows them, so a Bambu tag
 //    could not be opened anyway; the family check makes that explicit.
 //  - Written only when the sector opens with the factory key and its data
-//    blocks are empty, or when it opens with the format's own key and the
-//    caller asked for an overwrite. Anything else is left as it is.
+//    blocks are empty (or hold the format's own record from a write that
+//    stopped before the trailer), or when it opens with the format's own key
+//    and the caller asked for an overwrite. Anything else is left as it is.
 //  - A sector trailer is written by this file alone, only on a blank tag, and
 //    only with the transport access bits. It goes last, so a write that stops
 //    part way leaves a tag that is still on the factory key.
@@ -57,9 +58,14 @@ struct MifareWriteJob {
   TagFamily   family;
 };
 
+// The data blocks of the job's sector hold one record of a format. The same
+// shape as MifareWriteJob::is_own_record.
+typedef bool (*MifareRecordFn)(const uint8_t blocks[MIFARE_DATA_BLOCKS_MAX][MIFARE_BLOCK_BYTES]);
+
 enum MifareWriteResult {
   MIFARE_WRITE_OK,
-  MIFARE_WRITE_NO_TAG,         // nothing, or no 4 byte tag, or not the expected one
+  MIFARE_WRITE_NO_TAG,         // nothing, no 4 byte tag, not the expected one, or a
+                               // spool taken away and not put back in time
   MIFARE_WRITE_IS_FORMAT,      // already opens with the format's key: left alone
   MIFARE_WRITE_NOT_BLANK,      // other keys, data in the sector, or a Bambu tag
   MIFARE_WRITE_FAILED,         // refused part way, or an unusable job
@@ -74,7 +80,8 @@ typedef void (*MifareWaitFn)(int phase);
 // Puts the job onto the tag on the reader. expect, when not nullptr, is the
 // only UID accepted. overwrite: a tag that already opens with the format's
 // key gets the new blocks too (keys unchanged); only ever on an explicit
-// answer. uid_out receives the UID the write went to.
+// answer. uid_out receives the UID the write went to. All the waiting for a
+// spool to be put back together stays within one minute.
 MifareWriteResult mifareWrite(const MifareWriteJob& job, uint8_t uid_out[4],
                               const uint8_t* expect, MifareWaitFn wait, bool overwrite);
 
@@ -92,7 +99,13 @@ int mifareWakeCard(const uint8_t uid[4], const char* uid_str, bool* reader_silen
 // no UID any more (13.10.2026). The card is left selectable either way.
 enum MifareFactoryProbe {
   MIFARE_FACTORY_REFUSED = 0,  // other keys: the usual probes decide
-  MIFARE_FACTORY_OPENS   = 1,  // factory key, but data in it, or unreadable
+  MIFARE_FACTORY_OPENS   = 1,  // factory key, but data in it on two reads
   MIFARE_FACTORY_BLANK   = 2,  // factory key and empty: ready for a write
+  MIFARE_FACTORY_UNREAD  = 3,  // factory key, but the data blocks did not read:
+                               // a weak read, says nothing about the contents
 };
-int mifareProbeFactory(const uint8_t uid[4], const char* uid_str);
+// unfinished, when given, recognises a record a write of ours left on the
+// factory key because it stopped before the trailer: such a tag counts as
+// blank, the write finishes it.
+int mifareProbeFactory(const uint8_t uid[4], const char* uid_str,
+                       MifareRecordFn unfinished = nullptr);
