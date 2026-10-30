@@ -4145,6 +4145,18 @@ const char* const STRINGS[][3] = {
     "Utiliser" },  // STR_DENSITY_TAKE
   { "Ändern", "Change",
     "Modifier" },  // STR_DENSITY_CHANGE
+  // Logs page: the session log on a page of its own
+  { "Auf eigener Seite öffnen",
+    "Open on its own page",
+    "Ouvrir dans une page à part" },  // STR_W_SESSION_OPEN
+  // /log/live (web_log_live.cpp): the follow button while the view follows
+  // the end of the log, and while it is held; the filter field's
+  // placeholder; the tooltips of A- and A+.
+  { "Live",             "Live",         "Direct" },  // STR_W_LIVE_FOLLOW
+  { "Angehalten",       "Paused",       "En pause" },  // STR_W_LIVE_PAUSE
+  { "Filter",           "Filter",       "Filtrer" },  // STR_W_LIVE_FILTER
+  { "Kleinere Schrift", "Smaller text", "Texte plus petit" },  // STR_W_LIVE_SMALLER
+  { "Größere Schrift",  "Larger text",  "Texte plus grand" },  // STR_W_LIVE_LARGER
 };
 
 StringID tagWriteResultString(uint8_t code) {
