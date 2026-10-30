@@ -46,7 +46,10 @@ static uint8_t  s_write_fmt     = 0;
 // and not on every poll. Cleared when that write found no tag, so putting the
 // spool back offers it again.
 static char     s_cfs_asked_uid[24] = "";
-// 0 = blank tag, 1 = own tag to update, 2 = original tag to overwrite.
+// 0 = blank tag, 1 = own tag to update, 2 = original tag to overwrite,
+// 3 = original tag to get the spool id, 4 = asked for from the tag view.
+// Anything but 0 lets the write go over a tag that opens with the Creality
+// key; mifareWrite() still leaves every other tag alone.
 static uint8_t  s_cfs_variant = 0;
 
 // While a CFS write waits for a tag that stopped answering: say so on the
@@ -302,14 +305,14 @@ void showTagWriteAskPopup(int spool_id) {
   showTagWriteAskPopupFmt(spool_id, g_tagwrite_fmt);
 }
 
-void showTagWriteAskPopupFmt(int spool_id, uint8_t fmt, uint8_t variant) {
+void showTagWriteAskPopupFmt(int spool_id, uint8_t fmt, uint8_t variant, const char* uid) {
   if (scr_tag_write || spool_id <= 0) return;
   s_spool_id  = spool_id;
   s_mode      = ASK_WRITE;
   s_write_fmt = fmt;
   s_cfs_variant = (fmt == TAG_FMT_CREALITY) ? variant : 0;
   if (fmt == TAG_FMT_CREALITY)
-    snprintf(s_cfs_asked_uid, sizeof(s_cfs_asked_uid), "%s", g_tag.uid_str);
+    snprintf(s_cfs_asked_uid, sizeof(s_cfs_asked_uid), "%s", uid ? uid : g_tag.uid_str);
   logSDf("SHOW: TagWriteAskPopup spool=%d fmt=%s variant=%u", spool_id, tagFormatLabel(fmt),
          (unsigned)s_cfs_variant);
   if (fmt == TAG_FMT_CREALITY && variant == 1)
@@ -318,6 +321,8 @@ void showTagWriteAskPopupFmt(int spool_id, uint8_t fmt, uint8_t variant) {
     buildAsk(STR_TW_CFS_OVR_TITLE, STR_TW_CFS_OVR_HINT, STR_TW_BTN_REWRITE, STR_TW_BTN_SKIP);
   else if (fmt == TAG_FMT_CREALITY && variant == 3)
     buildAsk(STR_TW_CFS_SID_TITLE, STR_TW_CFS_SID_HINT, STR_TW_BTN_REWRITE, STR_TW_BTN_SKIP);
+  else if (fmt == TAG_FMT_CREALITY && variant == 4)
+    buildAsk(STR_TW_CFS_RW_TITLE, STR_TW_CFS_RW_HINT, STR_TW_BTN_REWRITE, STR_TW_BTN_SKIP);
   else if (fmt == TAG_FMT_CREALITY)
     buildAsk(STR_TW_CFS_ASK_TITLE, STR_TW_CFS_ASK_HINT, STR_TW_BTN_WRITE, STR_TW_BTN_SKIP);
   else

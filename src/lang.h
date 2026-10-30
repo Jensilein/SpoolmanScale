@@ -1935,6 +1935,11 @@ enum StringID {
   STR_W_L_ID_SHARE,
   STR_W_THEME_SPOOLY_DARK,
   STR_W_THEME_SPOOLY_LIGHT,
+  // Tag view: write a CFS record onto a 4 byte MIFARE tag on request
+  STR_TV_CFS_WRITE,
+  STR_TW_CFS_RW_TITLE,
+  STR_TW_CFS_RW_HINT,
+  STR_TV_CFS_NOT_HERE,
   STR_COUNT
 };
 
