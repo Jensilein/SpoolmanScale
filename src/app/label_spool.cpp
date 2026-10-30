@@ -12,6 +12,7 @@
 #include "app/label_link.h"
 #include "bambu/bambu_tag.h"
 #include "hardware/sd_logger.h"
+#include "services/worker_heap.h"
 #include "services/backend.h"
 #include "services/backend_api.h"
 #include "services/drying_sync.h"
@@ -28,7 +29,6 @@
 #define LABEL_DATE_STACK_BYTES 16384
 #define LABEL_DATE_PRIORITY    1
 #define LABEL_DATE_CORE        0
-#define LABEL_DATE_MIN_HEAP    60000
 // Above this a temperature is a typo or a unit mix-up, not a setting.
 #define LABEL_TEMP_MAX_C       500
 
@@ -262,10 +262,13 @@ static void dateTask(void*) {
   vTaskDelete(NULL);
 }
 
+// A refused start is asked for again on every loop pass.
+static LogGate s_refusal_gate{};
+
 // False when the task could not start; the caller then gives up on the dates.
 static bool startDateJob(int id) {
-  if (ESP.getFreeHeap() < LABEL_DATE_MIN_HEAP) {
-    logSDf("Label: dates not fetched, heap %u", (unsigned)ESP.getFreeHeap());
+  if (!workerHeapReady("Label: dates", workerFloorBackend(), LABEL_DATE_STACK_BYTES,
+                       &s_refusal_gate)) {
     return false;
   }
   s_job = DateJob{};

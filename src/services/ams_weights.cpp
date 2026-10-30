@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "hardware/sd_logger.h"
+#include "services/worker_heap.h"
 #include "services/backend.h"
 #include "services/backend_api.h"
 #include "services/dried_batch.h"
@@ -13,7 +14,6 @@
 #define AMS_WEIGHTS_STACK_BYTES  16384
 #define AMS_WEIGHTS_PRIORITY     1
 #define AMS_WEIGHTS_CORE         0
-#define AMS_WEIGHTS_MIN_HEAP     60000
 // Per request. Shorter than a write: nothing is lost when this gives up, the
 // grid simply keeps the percentage it already shows.
 #define AMS_WEIGHTS_TIMEOUT_MS   5000
@@ -88,6 +88,9 @@ static void amsWeightsTask(void* arg) {
   vTaskDelete(NULL);
 }
 
+// A refused start is asked for again on every loop pass.
+static LogGate s_refusal_gate{};
+
 bool amsWeightsStart(int printer_id, const AmsSlotState& st) {
   if (s_state != AWS_IDLE || printer_id <= 0 || !st.valid) return false;
   // One HTTP worker at a time: a second task is another 16 kB of stack, and
@@ -113,8 +116,8 @@ bool amsWeightsStart(int printer_id, const AmsSlotState& st) {
   }
   if (s_bay_count == 0) return false;
 
-  if (ESP.getFreeHeap() < AMS_WEIGHTS_MIN_HEAP) {
-    logSDf("AMSWEIGHTS: not started, heap %u", (unsigned)ESP.getFreeHeap());
+  if (!workerHeapReady("AMSWEIGHTS", workerFloorBackend(), AMS_WEIGHTS_STACK_BYTES,
+                       &s_refusal_gate)) {
     return false;
   }
 

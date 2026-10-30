@@ -7,11 +7,13 @@
 #include "hardware/sd_logger.h"
 #include "services/backend_api.h"
 #include "services/http_progress.h"
+#include "services/worker_heap.h"
 #include "web/web_jobs.h"
 
-// The priority, core and heap floor of the web jobs, for the same reasons: the
-// task sits below the loop so the display keeps its share, it lives on the
-// other core, and the heap floor is checked before the stack is taken from it.
+// The priority and core of the web jobs, for the same reasons: the task sits
+// below the loop so the display keeps its share, and it lives on the other
+// core. The heap floor is the shared rule of services/worker_heap.h, checked
+// before the stack is taken from the heap.
 // The stack is theirs as well. 10 kB was measured over plain http - a list on
 // all three backends left 13.6 of 16 kB unused (beta.43, 23.09.2026) - but an
 // https backend puts the TLS handshake on this task whenever the kept
@@ -20,7 +22,6 @@
 #define BACKEND_JOB_STACK_BYTES   16384
 #define BACKEND_JOB_PRIORITY      1
 #define BACKEND_JOB_CORE          0
-#define BACKEND_JOB_MIN_HEAP      60000
 
 // The same allocator the lookup path uses: the inventory goes into PSRAM,
 // not into the 320 kB the rest of the firmware shares. Static, because the
@@ -52,6 +53,11 @@ static uint32_t                   s_retry_pause_ms = 0;
 // rewrites cfg_spoolman_base, and this task must not read it half written; the
 // generation then drops whatever came back.
 static char                       s_base[sizeof(cfg_spoolman_base)] = "";
+// The free internal heap when the job started, for the line at its end:
+// with the lowest since boot it shows what a list really takes.
+static uint32_t                   s_heap_at_start = 0;
+// A refused start is asked for again on every loop pass.
+static LogGate                    s_refusal_gate{};
 
 static bool transientParseError(const DeserializationError& e) {
   return e == DeserializationError::IncompleteInput ||
@@ -95,11 +101,13 @@ static void backendJobTask(void* arg) {
   httpCountBytesInto(&s_bytes);
   runList();
   httpCountBytesInto(nullptr);
-  logSDf("Backend job: list%s done in %lu ms, code=%d err=%s partial=%d, %u bytes, stack left %u",
+  logSDf("Backend job: list%s done in %lu ms, code=%d err=%s partial=%d, %u bytes, stack left %u, "
+         "heap at start %u, lowest since boot %u",
          s_res.archived_only ? " of the archive" : s_res.archived ? " with archive" : "",
          (unsigned long)s_res.ms, s_res.code,
          s_res.err.c_str(), (int)s_res.partial, (unsigned)s_bytes,
-         (unsigned)uxTaskGetStackHighWaterMark(NULL));
+         (unsigned)uxTaskGetStackHighWaterMark(NULL), (unsigned)s_heap_at_start,
+         (unsigned)ESP.getMinFreeHeap());
   // Everything above is written before the state says so: the loop on the
   // other core reads the state first and the result after.
   __sync_synchronize();
@@ -113,10 +121,11 @@ bool backendJobStartList(bool allow_archived, const JsonDocument* filter,
   if (backendListBusy() || s_state != BJS_IDLE) return false;
   // Checked here rather than inside the task: the stack comes out of the
   // heap the moment the task is created.
-  if (ESP.getFreeHeap() < BACKEND_JOB_MIN_HEAP) {
-    logSDf("Backend job: postponed, heap %u", (unsigned)ESP.getFreeHeap());
+  if (!workerHeapReady("Backend job", workerFloorBackend(), BACKEND_JOB_STACK_BYTES,
+                       &s_refusal_gate)) {
     return false;
   }
+  s_heap_at_start = (uint32_t)ESP.getFreeHeap();
   s_doc.clear();
   s_filter.clear();
   s_has_filter = (filter != nullptr);

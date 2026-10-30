@@ -5,6 +5,7 @@
 #include "app/app_state.h"
 #include "app/backend_switch.h"
 #include "hardware/sd_logger.h"
+#include "services/worker_heap.h"
 #include "ui/spoolman_lookup.h"
 
 // The web jobs' stack, not the backend job's smaller one: a backend behind
@@ -13,7 +14,6 @@
 #define TAG_PROBE_STACK_BYTES   16384
 #define TAG_PROBE_PRIORITY      1
 #define TAG_PROBE_CORE          0
-#define TAG_PROBE_MIN_HEAP      60000
 
 static volatile TagProbeState s_state = TPS_IDLE;
 static TagProbeResult         s_res;
@@ -34,12 +34,15 @@ static void tagProbeTask(void* arg) {
   vTaskDelete(NULL);
 }
 
+// A refused start is asked for again on every loop pass.
+static LogGate s_refusal_gate{};
+
 bool tagProbeStart(const char* query) {
   if (s_state != TPS_IDLE || !query || !query[0]) return false;
   // Checked here rather than inside the task: the stack comes out of the
   // heap the moment the task is created.
-  if (ESP.getFreeHeap() < TAG_PROBE_MIN_HEAP) {
-    logSDf("Recheck: postponed, heap %u", (unsigned)ESP.getFreeHeap());
+  if (!workerHeapReady("Recheck", workerFloorBackend(), TAG_PROBE_STACK_BYTES,
+                       &s_refusal_gate)) {
     return false;
   }
   s_res.hit        = false;

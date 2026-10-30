@@ -17,6 +17,7 @@
 #include "web/web_server.h"
 #include "services/prefs_store.h"
 #include "services/version_compare.h"
+#include "services/worker_heap.h"
 #include "ui/ota_github.h"
 #include "ui/update_badges.h"
 
@@ -42,11 +43,6 @@ constexpr unsigned long RETRY_DELAY_MS = 3600000;
 // At most one check per day per device.
 constexpr uint32_t CHECK_INTERVAL_S = 86400;
 constexpr int HTTP_TIMEOUT_MS = 4000;
-
-// A TLS handshake needs roughly 40 kB. Below this it would either fail or push
-// something else out of memory, and skipping a version check costs nothing
-// while an out of memory reboot costs the user their session.
-constexpr uint32_t MIN_FREE_HEAP = 60000;
 
 // Unix time safely in the past. getLocalTime() reports 1970 until NTP has
 // answered, and a timestamp from then would make the daily window meaningless.
@@ -204,11 +200,13 @@ void maybeStartCheck() {
   // Signed difference, so this survives the millis() wrap after 49 days.
   if ((long)(millis() - s_due_ms) < 0) return;
 
-  // Checked here rather than inside the task: the 12 kB stack comes out of the
+  // Checked here rather than inside the task: the stack comes out of the
   // heap the moment the task is created, so testing after the fact would be
   // testing the wrong number. Skipping a version check costs nothing, an out
-  // of memory reboot costs the user their session.
-  if (ESP.getFreeHeap() < MIN_FREE_HEAP) {
+  // of memory reboot costs the user their session. GitHub is always https,
+  // so the TLS floor of services/backend_job_rules.h. A refusal waits
+  // RETRY_DELAY_MS, so it is logged every time.
+  if (!workerHeapReady("[upd]", workerFloorTls(), TASK_STACK_BYTES, nullptr)) {
     Serial.printf("[upd] postponed, heap %u\n", (unsigned)ESP.getFreeHeap());
     s_result = RES_FAIL_HEAP;
     s_due_ms = millis() + RETRY_DELAY_MS;

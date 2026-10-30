@@ -9,6 +9,7 @@
 
 #include "../app/backend_switch.h"
 #include "../hardware/sd_logger.h"
+#include "services/worker_heap.h"
 #include "backend.h"
 #include "backend_api.h"
 #include "text_util.h"
@@ -18,7 +19,6 @@
 #define FDB_STACK_BYTES   16384
 #define FDB_PRIORITY      1
 #define FDB_CORE          0
-#define FDB_MIN_HEAP      60000
 // The index is the whole database; read again after this long.
 #define FDB_INDEX_MAX_AGE_MS  (24UL * 60UL * 60UL * 1000UL)
 
@@ -274,10 +274,13 @@ static void fdbTask(void* arg) {
   vTaskDelete(NULL);
 }
 
+// A refused start is asked for again on every loop pass.
+static LogGate s_refusal_gate{};
+
 static bool startTask(FdbJob job) {
   if (s_state != FDB_IDLE) return false;
-  if (ESP.getFreeHeap() < FDB_MIN_HEAP) {
-    logSDf("Filament DB: postponed, heap %u", (unsigned)ESP.getFreeHeap());
+  if (!workerHeapReady("Filament DB", workerFloorBackend(), FDB_STACK_BYTES,
+                       &s_refusal_gate)) {
     return false;
   }
   s_job   = job;

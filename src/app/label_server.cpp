@@ -6,6 +6,7 @@
 
 #include "app/backend_switch.h"
 #include "hardware/sd_logger.h"
+#include "services/worker_heap.h"
 #include "services/backend.h"
 #include "services/backend_api.h"
 #include "services/prefs_store.h"
@@ -25,7 +26,6 @@
 #define LS_STACK_BYTES        16384
 #define LS_PRIORITY           1
 #define LS_CORE               0
-#define LS_MIN_HEAP           60000
 #define LS_WAIT_STEP_MS       20
 
 // Which label a raster is: spool, preset, print row, roll orientation,
@@ -130,10 +130,13 @@ static void jobTask(void*) {
   vTaskDelete(NULL);
 }
 
+// A refused start is asked for again on every loop pass.
+static LogGate s_refusal_gate{};
+
 // False when the task could not start; the caller marks the fetch failed.
 static bool startJob(JobKind kind, const LabelKey& key) {
-  if (ESP.getFreeHeap() < LS_MIN_HEAP) {
-    logSDf("Label: server fetch not started, heap %u", (unsigned)ESP.getFreeHeap());
+  if (!workerHeapReady("Label: server fetch", workerFloorBackend(), LS_STACK_BYTES,
+                       &s_refusal_gate)) {
     return false;
   }
   memset(&s_job, 0, sizeof(s_job));

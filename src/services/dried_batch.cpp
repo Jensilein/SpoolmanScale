@@ -5,6 +5,7 @@
 
 #include "app/app_state.h"
 #include "hardware/sd_logger.h"
+#include "services/worker_heap.h"
 #include "services/backend_api.h"
 
 // The numbers the web jobs run with, for the same reasons: an https backend
@@ -14,7 +15,6 @@
 #define DRIED_BATCH_STACK_BYTES  16384
 #define DRIED_BATCH_PRIORITY     1
 #define DRIED_BATCH_CORE         0
-#define DRIED_BATCH_MIN_HEAP     60000
 // Per spool, the same the single write on the card waits.
 #define DRIED_BATCH_TIMEOUT_MS   5000
 
@@ -47,14 +47,17 @@ static void driedBatchTask(void* arg) {
   vTaskDelete(NULL);
 }
 
+// A refused start is asked for again on every loop pass.
+static LogGate s_refusal_gate{};
+
 bool driedBatchStart(int printer_id, uint8_t ams_id, const int* spool_ids,
                      uint8_t n, const char* iso) {
   if (s_state != DBS_IDLE || !spool_ids || n == 0 || !iso || !iso[0]) return false;
   // Checked here rather than inside the task: the stack comes out of the
   // heap the moment the task is created, so testing afterwards would be
   // testing the wrong number.
-  if (ESP.getFreeHeap() < DRIED_BATCH_MIN_HEAP) {
-    logSDf("DRIEDBATCH: not started, heap %u", (unsigned)ESP.getFreeHeap());
+  if (!workerHeapReady("DRIEDBATCH", workerFloorBackend(), DRIED_BATCH_STACK_BYTES,
+                       &s_refusal_gate)) {
     return false;
   }
 

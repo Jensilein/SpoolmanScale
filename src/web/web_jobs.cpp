@@ -9,17 +9,18 @@
 #include "services/backend_job.h"
 #include "bambu/bambu_catalog.h"
 #include "services/github_release.h"
+#include "services/worker_heap.h"
 #include "web/web_net_probe.h"
 #include "web/web_shell.h"
 
 // The same numbers the update check task runs with, for the same reasons: a
 // TLS handshake with the certificate bundle wants the stack, the task sits
 // below the loop so the display keeps its share, and it lives on the other
-// core. The heap floor is checked before the stack is taken from it.
+// core. The heap floor (services/worker_heap.h) is checked before the stack
+// is taken from it.
 #define WEB_JOB_STACK_BYTES   16384
 #define WEB_JOB_PRIORITY      1
 #define WEB_JOB_CORE          0
-#define WEB_JOB_MIN_HEAP      60000
 // A result nobody collects is dropped after this, so the slot is free again
 // for the next visitor.
 #define WEB_JOB_KEEP_MS       60000UL
@@ -152,6 +153,21 @@ static void webJobTask(void* arg) {
   vTaskDelete(NULL);
 }
 
+// A page polls while it waits, so a refused start repeats on every request.
+static LogGate s_refusal_gate{};
+
+// The floor follows the server a job talks to: GitHub for the release and
+// catalogue jobs, the backend for the rest (the net probe is handed the
+// backend's address too, see web_net_probe.cpp).
+static uint32_t webJobFloor(WebJobKind kind) {
+  switch (kind) {
+    case WJ_GH_CHECK:
+    case WJ_GH_NOTES:
+    case WJ_BAMBU_CATALOG: return workerFloorTls();
+    default:               return workerFloorBackend();
+  }
+}
+
 bool webJobStart(WebJobKind kind, const char* arg, bool flag) {
   if (s_state != WJS_IDLE || kind == WJ_NONE) return false;
   // One inventory at a time, device wide, see backend_job.h.
@@ -159,8 +175,7 @@ bool webJobStart(WebJobKind kind, const char* arg, bool flag) {
   // Checked here rather than inside the task: the stack comes out of the
   // heap the moment the task is created, so testing afterwards would be
   // testing the wrong number.
-  if (ESP.getFreeHeap() < WEB_JOB_MIN_HEAP) {
-    Serial.printf("[webjob] postponed, heap %u\n", (unsigned)ESP.getFreeHeap());
+  if (!workerHeapReady("[webjob]", webJobFloor(kind), WEB_JOB_STACK_BYTES, &s_refusal_gate)) {
     return false;
   }
   s_res.kind   = kind;
