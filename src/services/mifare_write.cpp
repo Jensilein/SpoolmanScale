@@ -30,8 +30,25 @@ static constexpr uint16_t      WAIT_STEP_MS       = 20;
 // card answers a poll and then refuses its own key (13.10.2026).
 static constexpr unsigned long PUT_DOWN_SETTLE_MS = 700;
 // A tag found blank this session that refuses the factory key now and then.
-static constexpr int           BLANK_ASK_AGAIN    = 2;
-static constexpr int           PROBE_READ_TRIES   = 2;
+// Any tag not known to be Bambu's that refuses both keys, or whose sector
+// breaks off mid read, is asked to be put back this often (26.10.2026).
+static constexpr int           PUT_BACK_ASKS      = 2;
+// Reads of the probe sector at most: the first, and one more after a wake for
+// each that failed or showed data.
+static constexpr int           PROBE_READ_ATTEMPTS = 3;
+// "Holds data" is believed once this many reads say so (17.10.2026).
+static constexpr int           PROBE_DATA_READS   = 2;
+// A write that has once seen data in the sector writes only after this many
+// blank reads in a row (17.10.2026: one blank read after a misread was all
+// that stood between a foreign tag and a write).
+static constexpr int           BLANK_READS_AFTER_DATA = 2;
+// One write, every wait and every put-back included. Each wait alone may take
+// WAIT_TOTAL_MS, and with two put-backs they used to add up to over two
+// minutes of "put the spool back".
+static constexpr unsigned long WRITE_DEADLINE_MS  = 60000;
+// The check after a write gets at least this long to see the tag again, even
+// when the write itself used up the deadline: the blocks are on the tag by then.
+static constexpr unsigned long VERIFY_WAIT_MIN_MS = 5000;
 
 static uint8_t firstBlock(uint8_t sector)   { return sector * BLOCKS_PER_SECTOR; }
 static uint8_t trailerBlock(uint8_t sector) { return sector * BLOCKS_PER_SECTOR + 3; }
@@ -42,6 +59,20 @@ static bool blockIsBlank(const uint8_t b[MIFARE_BLOCK_BYTES]) {
   if (first != 0x00 && first != 0xFF && first != 0x20) return false;
   for (int i = 1; i < MIFARE_BLOCK_BYTES; i++) if (b[i] != first) return false;
   return true;
+}
+
+// The data blocks of a sector that is already open: 1 all blank, 0 data in
+// them, -1 a read failed. A sticker on the edge of the field can hand back a
+// block that is not what it holds (17.10.2026, 6D:7B:DB:4F: "holds data"
+// once, blank half a minute later, never written in between), so callers
+// only believe "data" once a second read after a fresh wake says the same.
+static int readDataBlocks(uint8_t sector, uint8_t blk[MIFARE_DATA_BLOCKS_MAX][MIFARE_BLOCK_BYTES]) {
+  int r = 1;
+  for (uint8_t b = 0; b < MIFARE_DATA_BLOCKS_MAX; b++) {
+    if (!nfcReadMifareBlock(firstBlock(sector) + b, blk[b])) return -1;
+    if (!blockIsBlank(blk[b])) r = 0;
+  }
+  return r;
 }
 
 static bool samePoll(const uint8_t uid[4], uint16_t timeout_ms) {
@@ -78,11 +109,11 @@ int mifareWakeCard(const uint8_t uid[4], const char* uid_str, bool* reader_silen
 // Polls for the card the write is meant for. Plain polls only: a card that
 // was just put down answers them, and nothing else touches it meanwhile.
 static bool waitForCard(uint8_t uid[NFC_UID_MAX], uint8_t* uid_len,
-                        const uint8_t* expect, MifareWaitFn wait) {
-  if (!wait) return false;
+                        const uint8_t* expect, MifareWaitFn wait, unsigned long budget_ms) {
+  if (!wait || !budget_ms) return false;
   wait(0);
   const unsigned long t0 = millis();
-  while (millis() - t0 < WAIT_TOTAL_MS) {
+  while (millis() - t0 < budget_ms) {
     *uid_len = 0;
     if (nfcReadPassiveTarget(uid, uid_len, WAIT_POLL_MS) && *uid_len == 4 &&
         (!expect || memcmp(uid, expect, 4) == 0)) {
@@ -100,28 +131,6 @@ static bool waitForCard(uint8_t uid[NFC_UID_MAX], uint8_t* uid_len,
   return false;
 }
 
-// Waits for the card and reads the sector the moment it answers a poll -
-// exactly what the main poll does, and the one moment a weakly placed tag
-// reliably opens (13.10.2026: read 0.7 s after being put down, 6E:C6:DB:4F
-// refused its key every time). A refused read leaves the card silent until it
-// is put down again, so the loop just keeps polling for that.
-static bool waitAndRead(uint8_t sector, const uint8_t uid_in[4], const uint8_t key_in[6],
-                        uint8_t blocks[4][MIFARE_BLOCK_BYTES], MifareWaitFn wait) {
-  uint8_t uid[4], key[MIFARE_KEY_BYTES];
-  memcpy(uid, uid_in, 4);
-  memcpy(key, key_in, MIFARE_KEY_BYTES);
-  wait(0);
-  const unsigned long t0 = millis();
-  while (millis() - t0 < WAIT_TOTAL_MS) {
-    if (samePoll(uid, WAIT_POLL_MS) && nfcReadMifareSector(sector, key, uid, blocks, NFC_KEY_A)) {
-      return true;
-    }
-    wait(1);
-    delay(WAIT_STEP_MS);
-  }
-  return false;
-}
-
 // One mifareWrite() as it runs: what the caller asked for, and once the card
 // is found, the card and its key. The steps below share it instead of handing
 // the same six values on from one to the next.
@@ -130,10 +139,47 @@ struct WriteRun {
   const uint8_t* expect;      // the UID the write is for, or nullptr for any
   MifareWaitFn wait;
   bool overwrite;
+  unsigned long started;      // millis() when the write began, for WRITE_DEADLINE_MS
   uint8_t uid[4];
   char uid_str[24];
   uint8_t key[MIFARE_KEY_BYTES];
 };
+
+// What a wait may still take: one wait's worth at most, and never past the
+// write's deadline. 0 once the deadline has passed.
+static unsigned long waitBudget(const WriteRun& run) {
+  const unsigned long used = millis() - run.started;
+  if (used >= WRITE_DEADLINE_MS) {
+    logSDf("%s write: %lu s for this write are up - not waiting any longer",
+           run.job.label, WRITE_DEADLINE_MS / 1000UL);
+    return 0;
+  }
+  const unsigned long left = WRITE_DEADLINE_MS - used;
+  return left < WAIT_TOTAL_MS ? left : WAIT_TOTAL_MS;
+}
+
+// Waits for the card and reads the job's sector the moment it answers a poll -
+// exactly what the main poll does, and the one moment a weakly placed tag
+// reliably opens (13.10.2026: read 0.7 s after being put down, 6E:C6:DB:4F
+// refused its key every time). A refused read leaves the card silent until it
+// is put down again, so the loop just keeps polling for that.
+static bool waitAndRead(const WriteRun& run, const uint8_t key_in[MIFARE_KEY_BYTES],
+                        uint8_t blocks[4][MIFARE_BLOCK_BYTES], unsigned long budget_ms) {
+  if (!run.wait || !budget_ms) return false;
+  uint8_t uid[4], key[MIFARE_KEY_BYTES];
+  memcpy(uid, run.uid, 4);
+  memcpy(key, key_in, MIFARE_KEY_BYTES);
+  run.wait(0);
+  const unsigned long t0 = millis();
+  while (millis() - t0 < budget_ms) {
+    if (samePoll(uid, WAIT_POLL_MS) && nfcReadMifareSector(run.job.sector, key, uid, blocks, NFC_KEY_A)) {
+      return true;
+    }
+    run.wait(1);
+    delay(WAIT_STEP_MS);
+  }
+  return false;
+}
 
 // Finds the card to write to. A card that refused a key earlier may not
 // answer a plain poll; release it, then reset the field once, then ask for
@@ -154,14 +200,17 @@ static bool findCard(const WriteRun& run, uint8_t uid[NFC_UID_MAX], bool* deferr
     delay(WAKE_SETTLE_MS);
     found = nfcReadPassiveTarget(uid, &uid_len, WAKE_POLL_MS) && right_card();
   }
-  if (!found && run.overwrite && expect && wait) {
+  // Only a tag known to carry the format is read the moment it answers again
+  // (overwriteFirst); any other tag - the tag view offers the write for every
+  // MIFARE tag that is not Bambu's - is waited for like a blank one.
+  if (!found && run.overwrite && expect && wait && tagFamilyGet(expect) == job.family) {
     memcpy(uid, expect, 4);
     *deferred = true;
     return true;
   }
   if (!found) {
     logSDf("%s write: tag does not answer, waiting for the spool to be put back", job.label);
-    found = waitForCard(uid, &uid_len, expect, wait);
+    found = waitForCard(uid, &uid_len, expect, wait, waitBudget(run));
   }
   if (!found) logSDf("%s write: no 4 byte tag on the reader", job.label);
   return found;
@@ -195,7 +244,9 @@ static MifareWriteResult verifyWritten(const WriteRun& run, const uint8_t key[6]
   if (!read && wait) {
     silent = false;
     logSDf("%s write: %s written, waiting for it to answer for the check", job.label, uid_str);
-    read = waitAndRead(job.sector, uid, k, back, wait);
+    unsigned long budget = waitBudget(run);
+    if (budget < VERIFY_WAIT_MIN_MS) budget = VERIFY_WAIT_MIN_MS;
+    read = waitAndRead(run, k, back, budget);
   }
   bool verified = read;
   for (uint8_t b = 0; verified && b < job.data_blocks; b++) {
@@ -253,46 +304,81 @@ static bool overwriteFirst(const WriteRun& run, bool deferred, bool* silent,
   memcpy(k, run.key, MIFARE_KEY_BYTES);
   uint8_t blocks[4][MIFARE_BLOCK_BYTES];
   bool ok = !deferred && nfcReadMifareSector(job.sector, k, u, blocks, NFC_KEY_A);
-  if (!ok && wait) {
+  // Only a tag known to carry the format is waited for here: a blank one
+  // never opens with this key, and 20 s of "put it back" would be for
+  // nothing. A weak tag the scale never settled gets the key again later.
+  if (!ok && wait && tagFamilyGet(u) == job.family) {
     logSDf("%s write: %s does not answer with its key, waiting for the spool to be put back",
            job.label, uid_str);
-    ok = waitAndRead(job.sector, u, k, blocks, wait);
+    ok = waitAndRead(run, k, blocks, waitBudget(run));
   }
   if (ok) {
     *out = overwriteData(run, job.is_own_record(blocks));
     return true;
   }
   if (!mifareWakeCard(u, uid_str, silent) || *silent) {
-    *out = MIFARE_WRITE_NO_TAG;
-    return true;
+    // A tag that has gone quiet is asked to be put back rather than given
+    // up on: from the tag view that is a weak tag more often than not.
+    *silent = false;
+    uint8_t got[NFC_UID_MAX];
+    uint8_t got_len = 0;
+    if (!waitForCard(got, &got_len, u, wait, waitBudget(run))) {
+      *out = MIFARE_WRITE_NO_TAG;
+      return true;
+    }
   }
   return false;   // opens with neither (formatted elsewhere, say): factory key next
 }
 
 // The factory key refused: the tag may already carry the format. Left alone
-// unless an overwrite was asked for.
-static MifareWriteResult ownKeyInstead(const WriteRun& run) {
+// unless an overwrite was asked for. True when that decided the outcome, in
+// *out; false when the tag refused the format's key as well.
+static bool tryOwnKey(const WriteRun& run, bool* silent, MifareWriteResult* out) {
   const MifareWriteJob& job = run.job;
   const char* uid_str = run.uid_str;
   uint8_t uid[4], k[MIFARE_KEY_BYTES];
   memcpy(uid, run.uid, 4);
   memcpy(k, run.key, MIFARE_KEY_BYTES);
-  bool silent = false;
   uint8_t blocks[4][MIFARE_BLOCK_BYTES];
-  const int woke = mifareWakeCard(uid, uid_str, &silent);
-  if (woke && !silent && nfcReadMifareSector(job.sector, k, uid, blocks, NFC_KEY_A)) {
-    const bool rec = job.is_own_record(blocks);
-    if (run.overwrite) return overwriteData(run, rec);
-    logSDf("%s write: %s already opens with the format's key%s - not written",
-           job.label, uid_str, rec ? " and holds a record" : "");
-    mifareWakeCard(uid, uid_str, &silent);
-    if (rec) tagFamilySet(uid, job.family);
-    return MIFARE_WRITE_IS_FORMAT;
+  const int woke = mifareWakeCard(uid, uid_str, silent);
+  if (!woke || *silent || !nfcReadMifareSector(job.sector, k, uid, blocks, NFC_KEY_A)) {
+    logSDf("%s write: %s refused the factory key and the format's key (woke=%d)",
+           job.label, uid_str, woke);
+    return false;
   }
-  logSDf("%s write: %s refuses the factory key - not a blank tag, not written",
-         job.label, uid_str);
-  if (!silent) mifareWakeCard(uid, uid_str, &silent);
-  return MIFARE_WRITE_NOT_BLANK;
+  const bool rec = job.is_own_record(blocks);
+  if (run.overwrite) {
+    *out = overwriteData(run, rec);
+    return true;
+  }
+  logSDf("%s write: %s already opens with the format's key%s - not written",
+         job.label, uid_str, rec ? " and holds a record" : "");
+  mifareWakeCard(uid, uid_str, silent);
+  if (rec) tagFamilySet(uid, job.family);
+  *out = MIFARE_WRITE_IS_FORMAT;
+  return true;
+}
+
+// Asks for the spool to be put back and opens the job's sector with the
+// factory key again. A spool that does not come back in time is gone: the
+// write ends as "no tag", not as a foreign tag, so the caller offers it again.
+enum PutBack { PUT_BACK_OPENED, PUT_BACK_REFUSED, PUT_BACK_GONE };
+static PutBack putBackFactory(const WriteRun& run) {
+  uint8_t got[NFC_UID_MAX];
+  uint8_t got_len = 0;
+  if (!waitForCard(got, &got_len, run.uid, run.wait, waitBudget(run))) {
+    logSDf("%s write: %s was not put back - not written", run.job.label, run.uid_str);
+    return PUT_BACK_GONE;
+  }
+  return nfcAuthMifareSector(run.job.sector, FACTORY_KEY, run.uid, NFC_KEY_A)
+             ? PUT_BACK_OPENED : PUT_BACK_REFUSED;
+}
+
+// After a read with the factory key the card does not answer the next one:
+// wake it and open the sector again.
+static bool reopenFactory(const WriteRun& run, bool* silent) {
+  return mifareWakeCard(run.uid, run.uid_str, silent) && !*silent &&
+         nfcAuthMifareSector(run.job.sector, FACTORY_KEY, run.uid, NFC_KEY_A);
 }
 
 // Cosmetic second sector, see MifareWriteJob::pad_sector. Nothing depends on
@@ -321,47 +407,99 @@ static void padSector(const MifareWriteJob& job, const uint8_t uid_in[4], const 
   }
 }
 
-// The sector opened with the factory key: its data blocks must be empty.
-// Then the data, then the trailer that locks it to the new key - last, so a
+// The job's sector of a tag just opened with the factory key: 1 blank, 0
+// data, -1 a read failed. A record of ours is taken at its first read. Any
+// other data makes the write careful: it writes only once the next
+// BLANK_READS_AFTER_DATA reads, each after a fresh wake, all say blank; one
+// that shows data again settles it as data (see readDataBlocks).
+static int readForWrite(const WriteRun& run, uint8_t old[MIFARE_DATA_BLOCKS_MAX][MIFARE_BLOCK_BYTES],
+                        bool* silent) {
+  const MifareWriteJob& job = run.job;
+  int st = readDataBlocks(job.sector, old);
+  if (st != 0 || (job.set_trailer && job.is_own_record(old))) return st;
+  for (int n = 0; n < BLANK_READS_AFTER_DATA; n++) {
+    if (!reopenFactory(run, silent)) return -1;
+    st = readDataBlocks(job.sector, old);
+    if (st != 1) return st;
+  }
+  logSDf("%s write: %s read as holding data once, blank on the next %d reads - writing",
+         job.label, run.uid_str, BLANK_READS_AFTER_DATA);
+  return 1;
+}
+
+// readForWrite until the sector says something: a read that broke off on a
+// weakly placed tag asks for the spool to be put back, twice at most
+// (26.10.2026). MIFARE_WRITE_OK with the answer in *st; otherwise the outcome.
+static MifareWriteResult readSectorOrAsk(const WriteRun& run,
+                                         uint8_t old[MIFARE_DATA_BLOCKS_MAX][MIFARE_BLOCK_BYTES],
+                                         bool* silent, int* st) {
+  const MifareWriteJob& job = run.job;
+  *st = readForWrite(run, old, silent);
+  const bool may_retry = run.wait && tagFamilyGet(run.uid) != TAG_FAMILY_BAMBU;
+  for (int again = 0; *st < 0 && may_retry && again < PUT_BACK_ASKS; again++) {
+    logSDf("%s write: %s sector %u did not read - asking for it again (%d/%d)", job.label,
+           run.uid_str, (unsigned)job.sector, again + 1, PUT_BACK_ASKS);
+    *silent = false;
+    const PutBack pb = putBackFactory(run);
+    if (pb == PUT_BACK_GONE) return MIFARE_WRITE_NO_TAG;
+    if (pb == PUT_BACK_OPENED) *st = readForWrite(run, old, silent);
+  }
+  if (*st >= 0) return MIFARE_WRITE_OK;
+  logSDf("%s write: %s sector %u unreadable - not written", job.label, run.uid_str,
+         (unsigned)job.sector);
+  mifareWakeCard(run.uid, run.uid_str, silent);
+  return MIFARE_WRITE_FAILED;
+}
+
+// Data, then the trailer that locks the sector to the new key - last, so a
 // failure before it leaves a tag that is still on the factory key and can
 // simply be written again. Finally read back the way the printer will.
-static MifareWriteResult writeBlank(const WriteRun& run) {
+static MifareWriteResult writeAndLock(const WriteRun& run, bool silent) {
   const MifareWriteJob& job = run.job;
-  const char* uid_str = run.uid_str;
-  const uint8_t* key = run.key;
-  uint8_t uid[4];
-  memcpy(uid, run.uid, 4);
-  bool silent = false;
-  const uint8_t first = firstBlock(job.sector);
-  for (uint8_t b = 0; b < MIFARE_DATA_BLOCKS_MAX; b++) {
-    uint8_t old[MIFARE_BLOCK_BYTES];
-    const bool readable = nfcReadMifareBlock(first + b, old);
-    if (!readable || !blockIsBlank(old)) {
-      logSDf("%s write: %s block %u %s - not written", job.label, uid_str,
-             (unsigned)(first + b), readable ? "holds data" : "unreadable");
-      mifareWakeCard(uid, uid_str, &silent);
-      return readable ? MIFARE_WRITE_NOT_BLANK : MIFARE_WRITE_FAILED;
-    }
-  }
   int refused = -1;
   if (!writeDataBlocks(job, &refused)) {
-    logSDf("%s write: %s block %d refused", job.label, uid_str, refused);
-    mifareWakeCard(uid, uid_str, &silent);
+    logSDf("%s write: %s block %d refused", job.label, run.uid_str, refused);
+    mifareWakeCard(run.uid, run.uid_str, &silent);
     return MIFARE_WRITE_FAILED;
   }
   if (job.set_trailer) {
     uint8_t trailer[MIFARE_BLOCK_BYTES];
-    memcpy(trailer, key, MIFARE_KEY_BYTES);
+    memcpy(trailer, run.key, MIFARE_KEY_BYTES);
     memcpy(trailer + MIFARE_KEY_BYTES, TRANSPORT_ACCESS, sizeof(TRANSPORT_ACCESS));
-    memcpy(trailer + MIFARE_KEY_BYTES + sizeof(TRANSPORT_ACCESS), key, MIFARE_KEY_BYTES);
+    memcpy(trailer + MIFARE_KEY_BYTES + sizeof(TRANSPORT_ACCESS), run.key, MIFARE_KEY_BYTES);
     if (!nfcWriteMifareBlock(trailerBlock(job.sector), trailer)) {
-      logSDf("%s write: %s trailer refused", job.label, uid_str);
-      mifareWakeCard(uid, uid_str, &silent);
+      logSDf("%s write: %s trailer refused", job.label, run.uid_str);
+      mifareWakeCard(run.uid, run.uid_str, &silent);
       return MIFARE_WRITE_FAILED;
     }
   }
-  if (job.pad_sector) padSector(job, uid, uid_str);
-  return verifyWritten(run, job.set_trailer ? key : FACTORY_KEY, silent);
+  if (job.pad_sector) padSector(job, run.uid, run.uid_str);
+  return verifyWritten(run, job.set_trailer ? run.key : FACTORY_KEY, silent);
+}
+
+// The sector opened with the factory key: its data blocks must be empty, or
+// hold only the format's own record on the factory key - a write of ours
+// that stopped before the trailer (17.10.2026, 00:DF:A7:2E on spool 28: the
+// sticker dropped out mid write and was 'holds data' for good after that).
+// Anything else stays untouched.
+static MifareWriteResult writeBlank(const WriteRun& run) {
+  const MifareWriteJob& job = run.job;
+  bool silent = false;
+  uint8_t old[MIFARE_DATA_BLOCKS_MAX][MIFARE_BLOCK_BYTES];
+  int st = -1;
+  const MifareWriteResult r = readSectorOrAsk(run, old, &silent, &st);
+  if (r != MIFARE_WRITE_OK) return r;
+  if (st == 0) {
+    if (!job.set_trailer || !job.is_own_record(old)) {
+      logSDf("%s write: %s sector %u holds data - not written", job.label, run.uid_str,
+             (unsigned)job.sector);
+      mifareWakeCard(run.uid, run.uid_str, &silent);
+      return MIFARE_WRITE_NOT_BLANK;
+    }
+    logSDf("%s write: %s holds an unlocked record (earlier write cut short) - writing it again",
+           job.label, run.uid_str);
+  }
+  return writeAndLock(run, silent);
 }
 
 // Sector 0 holds the UID and the manufacturer block; a trailer outside the
@@ -373,48 +511,73 @@ static bool jobUsable(const MifareWriteJob& job) {
          (job.pad_sector == 0 || (job.pad_sector <= LAST_SECTOR && job.pad_sector != job.sector));
 }
 
+// Opens the job's sector with the factory key. A refused key halts the card,
+// so every "no" is followed by a wake before the next question, and a card
+// that refuses the factory key is asked the format's key as well (tryOwnKey,
+// which may decide the outcome on its own, in *out).
+//
+// Refusing both says nothing for sure: a weakly placed sticker refuses even
+// the right key now and then (13.10.2026), and on 26.10.2026 the erased
+// original tag 15:C5:C5:11 of spool 38 was turned away as "not a blank
+// tag" twice while it kept dropping out, although it opened with the
+// factory key a minute before and took a CFtag write from a phone
+// afterwards. Only the remembered family used to decide whether a refusal
+// was worth a second try - and a tag that drops out is exactly one whose
+// family the scale never settled. So any tag that is not known to be
+// Bambu's is asked to be put back, twice at most, before it counts as
+// somebody else's. Nothing is written until one of the two keys opens it,
+// so a truly foreign tag only costs the user the two placements. A spool
+// that is not put back ends the write as "no tag".
+static bool openFactory(const WriteRun& run, bool* silent, MifareWriteResult* out) {
+  const MifareWriteJob& job = run.job;
+  if (nfcAuthMifareSector(job.sector, FACTORY_KEY, run.uid, NFC_KEY_A)) return true;
+  const bool may_retry = run.wait && tagFamilyGet(run.uid) != TAG_FAMILY_BAMBU;
+  for (int again = 0; ; again++) {
+    if (tryOwnKey(run, silent, out)) return false;
+    if (!may_retry || again >= PUT_BACK_ASKS) break;
+    logSDf("%s write: %s a weak read? asking for it again (%d/%d)", job.label, run.uid_str,
+           again + 1, PUT_BACK_ASKS);
+    *silent = false;
+    const PutBack pb = putBackFactory(run);
+    if (pb == PUT_BACK_OPENED) return true;
+    if (pb == PUT_BACK_GONE) { *out = MIFARE_WRITE_NO_TAG; return false; }
+  }
+  logSDf("%s write: %s refuses the factory key and the format's key - not a blank tag, not written",
+         job.label, run.uid_str);
+  if (!*silent) mifareWakeCard(run.uid, run.uid_str, silent);
+  *out = MIFARE_WRITE_NOT_BLANK;
+  return false;
+}
+
 MifareWriteResult mifareWrite(const MifareWriteJob& job, uint8_t uid_out[4],
                               const uint8_t* expect, MifareWaitFn wait, bool overwrite) {
   if (!jobUsable(job)) {
     logSD("MIFARE write: the job names a sector or blocks it may not touch - nothing written");
     return MIFARE_WRITE_FAILED;
   }
-  WriteRun run{job, expect, wait, overwrite, {0}, "", {0}};
+  WriteRun run{job, expect, wait, overwrite, millis(), {0}, "", {0}};
   uint8_t uid[NFC_UID_MAX] = {0};
   bool deferred = false;
   if (!findCard(run, uid, &deferred)) return MIFARE_WRITE_NO_TAG;
   memcpy(uid_out, uid, 4);
   memcpy(run.uid, uid, 4);
-  const char* uid_str = run.uid_str;
   snprintf(run.uid_str, sizeof(run.uid_str), "%02X:%02X:%02X:%02X", uid[0], uid[1], uid[2], uid[3]);
   if (tagFamilyGet(uid) == TAG_FAMILY_BAMBU) {
-    logSDf("%s write: %s is a Bambu tag - never written", job.label, uid_str);
+    logSDf("%s write: %s is a Bambu tag - never written", job.label, run.uid_str);
     return MIFARE_WRITE_NOT_BLANK;
   }
   if (!job.own_key(uid, run.key)) {
-    logSDf("%s write: %s no key for this UID", job.label, uid_str);
+    logSDf("%s write: %s no key for this UID", job.label, run.uid_str);
     return MIFARE_WRITE_FAILED;
   }
   bool silent = false;
-  MifareWriteResult decided;
-  if (overwrite && overwriteFirst(run, deferred, &silent, &decided)) {
-    return decided;
-  }
-  bool opened = nfcAuthMifareSector(job.sector, FACTORY_KEY, uid, NFC_KEY_A);
-  for (int again = 0; !opened && again < BLANK_ASK_AGAIN && wait &&
-                      tagFamilyGet(uid) == TAG_FAMILY_BLANK; again++) {
-    logSDf("%s write: %s refused the factory key, but was blank - asking for it again",
-           job.label, uid_str);
-    uint8_t got[NFC_UID_MAX];
-    uint8_t got_len = 0;
-    if (!waitForCard(got, &got_len, uid, wait)) break;
-    opened = nfcAuthMifareSector(job.sector, FACTORY_KEY, uid, NFC_KEY_A);
-  }
-  if (!opened) return ownKeyInstead(run);
+  MifareWriteResult decided = MIFARE_WRITE_FAILED;
+  if (overwrite && overwriteFirst(run, deferred, &silent, &decided)) return decided;
+  if (!openFactory(run, &silent, &decided)) return decided;
   return writeBlank(run);
 }
 
-int mifareProbeFactory(const uint8_t uid[4], const char* uid_str) {
+int mifareProbeFactory(const uint8_t uid[4], const char* uid_str, MifareRecordFn unfinished) {
   bool silent = false;
   if (!nfcAuthMifareSector(PROBE_SECTOR, FACTORY_KEY, uid, NFC_KEY_A)) {
     const int w = mifareWakeCard(uid, uid_str, &silent);   // for whichever probe comes next
@@ -425,23 +588,41 @@ int mifareProbeFactory(const uint8_t uid[4], const char* uid_str) {
   // be read too. A read that fails says nothing about them (13.10.2026: a
   // blank sticker, half off the reader after the refused Creality key,
   // opened and then read nothing, and went to the Bambu probe as "holds
-  // data"). So a failed read gets one more go after a wake.
+  // data"). So a failed read gets another go after a wake.
+  // A record of ours on the factory key is a write that stopped before the
+  // trailer took (17.10.2026, 00:DF:A7:2E on spool 28: the sticker dropped
+  // out mid write and was then "holds data" for good, so the scale never
+  // offered it again). Ours to finish: treated as blank. Other data is only
+  // believed on a second read (see readDataBlocks).
   int data = -1;   // -1 unread, 0 holds data, 1 blank
-  for (int attempt = 0; attempt < PROBE_READ_TRIES && data < 0; attempt++) {
-    if (attempt > 0 && (!mifareWakeCard(uid, uid_str, &silent) ||
+  bool half = false;
+  int data_reads = 0;
+  uint8_t blk[MIFARE_DATA_BLOCKS_MAX][MIFARE_BLOCK_BYTES];
+  for (int attempt = 0; attempt < PROBE_READ_ATTEMPTS; attempt++) {
+    if (attempt > 0 && (!mifareWakeCard(uid, uid_str, &silent) || silent ||
                         !nfcAuthMifareSector(PROBE_SECTOR, FACTORY_KEY, uid, NFC_KEY_A))) break;
-    int blank = 1;
-    for (uint8_t b = 0; b < MIFARE_DATA_BLOCKS_MAX && blank == 1; b++) {
-      uint8_t d[MIFARE_BLOCK_BYTES];
-      if (!nfcReadMifareBlock(firstBlock(PROBE_SECTOR) + b, d)) blank = -1;
-      else if (!blockIsBlank(d)) blank = 0;
+    data = readDataBlocks(PROBE_SECTOR, blk);
+    if (data == 1) {
+      if (data_reads > 0) {
+        logSDf("NFC: %s showed data on one read, blank on the next - weak read", uid_str);
+      }
+      break;
     }
-    data = blank;
+    if (data == 0) {
+      half = unfinished && unfinished(blk);
+      if (half || ++data_reads >= PROBE_DATA_READS) break;
+    }
   }
   // After an authentication the card does not answer the next poll.
   const int back = silent ? 0 : mifareWakeCard(uid, uid_str, &silent);
   logSDf("NFC: %s opens with the factory key, %s (woke=%d)", uid_str,
-         data == 1 ? "blank" : data == 0 ? "but sector 1 holds data"
-                                         : "but sector 1 could not be read", back);
-  return data == 1 ? MIFARE_FACTORY_BLANK : MIFARE_FACTORY_OPENS;
+         data == 1   ? "blank"
+         : half      ? "holds a record that was never locked - treated as blank"
+         : data == 0 ? "but sector 1 holds data"
+                     : "but sector 1 could not be read", back);
+  // Unread is kept apart from "holds data" (26.10.2026): a blank sticker that
+  // drops out mid read is still blank, and a caller that took it for data
+  // forgot that the tag had been blank and never offered the write again.
+  return (data == 1 || half) ? MIFARE_FACTORY_BLANK
+         : data < 0          ? MIFARE_FACTORY_UNREAD : MIFARE_FACTORY_OPENS;
 }

@@ -39,7 +39,7 @@ bool crealityRecordForSpool(JsonObjectConst sp, int spool_id, char rec[41]) {
   return crealityBuildRecord(in, rec);
 }
 
-static bool isCrealityRecord(const uint8_t blocks[MIFARE_DATA_BLOCKS_MAX][MIFARE_BLOCK_BYTES]) {
+bool crealityIsRecord(const uint8_t blocks[MIFARE_DATA_BLOCKS_MAX][MIFARE_BLOCK_BYTES]) {
   CrealityTag t;
   return crealityDecode(blocks, &t);
 }
@@ -57,7 +57,7 @@ bool crealityBuildJob(JsonObjectConst sp, int spool_id, MifareWriteJob* job,
   job->data_blocks   = MIFARE_DATA_BLOCKS_MAX;
   memcpy(job->data, cipher, sizeof(cipher));
   job->own_key       = crealityDeriveSectorKey;
-  job->is_own_record = isCrealityRecord;
+  job->is_own_record = crealityIsRecord;
   job->set_trailer   = true;
   job->pad_sector    = CFS_PAD_SECTOR;
   job->pad_byte      = CFS_PAD_BYTE;
