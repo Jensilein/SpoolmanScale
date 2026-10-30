@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
+#include <StreamString.h>
 #include <Update.h>
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
@@ -39,6 +40,65 @@ void githubTrust(WiFiClientSecure &client) {
   client.setCACertBundle(x509_crt_bundle_start, x509_crt_bundle_end - x509_crt_bundle_start);
 }
 
+// One API request: connection, answer and body all have to arrive.
+#define GH_API_TIMEOUT_MS  8000
+// A failed connection or a body cut short is tried once more: both have been
+// seen on a request that went through when asked again. A 404 or a 403 is
+// GitHub's answer and is not asked twice.
+#define GH_API_ATTEMPTS    2
+#define GH_API_RETRY_MS    500
+
+// One attempt at an API URL. The status code, or a negative HTTPClient error
+// when the request or the body did not make it; body holds the whole answer
+// only on 200.
+static int ghApiAttempt(const String &url, String &body) {
+  WiFiClientSecure client;
+  githubTrust(client);
+  HTTPClient http;
+  http.begin(client, url);
+  http.addHeader("User-Agent", "SpoolmanScale-ESP32");
+  http.setConnectTimeout(GH_API_TIMEOUT_MS);
+  http.setTimeout(GH_API_TIMEOUT_MS);
+  const int code = http.GET();
+  if (code != 200) {
+    // 404 is the ordinary answer for a tag that was never published.
+    if (code != 404)
+      logSDf("GitHub API: %s - %d %s", url.c_str(), code,
+             code < 0 ? HTTPClient::errorToString(code).c_str() : "");
+    http.end();
+    return code;
+  }
+  // Read into a String rather than parsed off the socket: http.getStream()
+  // hands back the raw client, which skips HTTPClient's chunked decoding, and
+  // GitHub answers chunked. Not through http.getString() either: it drops the
+  // error of a connection lost mid-body and hands back what came so far, which
+  // then failed as "JSON: IncompleteInput" with no word of the network.
+  StreamString got;
+  if (http.getSize() > 0) got.reserve(http.getSize() + 1);
+  const int read = http.writeToStream(&got);
+  http.end();
+  if (read < 0) {
+    logSDf("GitHub API: %s - body cut off after %u bytes, %d %s", url.c_str(),
+           (unsigned)got.length(), read, HTTPClient::errorToString(read).c_str());
+    return read;
+  }
+  body = std::move(got);
+  return code;
+}
+
+// An API URL with one retry for a failure on the way. err gets "HTTP <code>"
+// for anything but 200, fit to be shown as it is.
+static int ghApiGet(const String &url, String &body, char *err, size_t err_len) {
+  int code = 0;
+  for (int attempt = 1; attempt <= GH_API_ATTEMPTS; attempt++) {
+    if (attempt > 1) delay(GH_API_RETRY_MS);
+    code = ghApiAttempt(url, body);
+    if (code >= 0) break;
+  }
+  if (code != 200 && err && err_len) snprintf(err, err_len, "HTTP %d", code);
+  return code;
+}
+
 bool githubLatestTag(bool prerelease, char *tag, size_t tag_len,
                      char *published, size_t pub_len,
                      char *err, size_t err_len, uint32_t *image_size) {
@@ -49,37 +109,18 @@ bool githubLatestTag(bool prerelease, char *tag, size_t tag_len,
   if (published && pub_len) published[0] = '\0';
   if (err && err_len) err[0] = '\0';
 
-  WiFiClientSecure client;
-  githubTrust(client);
-  HTTPClient http;
   // per_page caps the list. Unbounded it answers with every release ever cut -
-  // 109 KB at the time of writing, against roughly 145 KB of free heap.
+  // 109 KB at the time of writing. The filter below keeps the parsed document
+  // small; the body itself lands in PSRAM.
   String url = prerelease
     ? "https://api.github.com/repos/" GH_REPO "/releases?per_page=3"
     : "https://api.github.com/repos/" GH_REPO "/releases/latest";
-  http.begin(client, url);
-  http.addHeader("User-Agent", "SpoolmanScale-ESP32");
-  http.setTimeout(8000);
   const uint32_t heap_before = ESP.getFreeHeap();
-  int code = http.GET();
-  Serial.printf("GitHub API: %d\n", code);
-
-  if (code != 200) {
-    if (err && err_len) snprintf(err, err_len, "HTTP %d", code);
-    http.end();
-    return false;
-  }
-
-  // Read as a String rather than straight off the socket. http.getStream()
-  // hands back the raw client, which skips HTTPClient's chunked decoding - and
-  // this endpoint answers chunked as soon as the list is not capped. The
-  // memory win never came from the stream anyway: it comes from per_page and
-  // from the filter, which is what keeps the parsed document small. With
-  // per_page=3 the body is around 27 kB and bounded.
-  String payload = http.getString();
+  String payload;
+  const int code = ghApiGet(url, payload, err, err_len);
+  if (code != 200) return false;
   const int    payload_len = payload.length();
   const uint32_t heap_parse = ESP.getFreeHeap();
-  http.end();
 
   DeserializationError jerr;
   int entries = 0;
@@ -199,27 +240,18 @@ bool githubReleaseByTag(const char *tag, GithubRelease &out,
     return false;
   }
 
-  WiFiClientSecure client;
-  githubTrust(client);
-  HTTPClient http;
   String url = "https://api.github.com/repos/" GH_REPO "/releases/tags/";
   url += tag;
-  http.begin(client, url);
-  http.addHeader("User-Agent", "SpoolmanScale-ESP32");
-  http.setTimeout(8000);
-  int code = http.GET();
+  String payload;
+  const int code = ghApiGet(url, payload, err, err_len);
 
   // 404 is the ordinary answer for a build that was never published - a local
   // one, or an image pushed through the browser. Told apart from a real
   // failure so the page can say which it was.
   if (code != 200) {
-    if (err && err_len) snprintf(err, err_len, code == 404 ? "notfound" : "HTTP %d", code);
-    http.end();
+    if (code == 404 && err && err_len) snprintf(err, err_len, "%s", "notfound");
     return false;
   }
-
-  String payload = http.getString();
-  http.end();
 
   JsonDocument filter;
   filter["tag_name"]     = true;
