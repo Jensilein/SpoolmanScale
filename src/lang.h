@@ -1935,6 +1935,13 @@ enum StringID {
   STR_W_L_ID_SHARE,
   STR_W_THEME_SPOOLY_DARK,
   STR_W_THEME_SPOOLY_LIGHT,
+  // Logs page: the session log on a page of its own
+  STR_W_SESSION_OPEN,
+  STR_W_LIVE_FOLLOW,
+  STR_W_LIVE_PAUSE,
+  STR_W_LIVE_FILTER,
+  STR_W_LIVE_SMALLER,
+  STR_W_LIVE_LARGER,
   STR_COUNT
 };
 
