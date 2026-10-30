@@ -2089,12 +2089,14 @@ void linkIdLookupAndPatch(int entered_id, bool is_bambu) {
     idPadSay(T(STR_NO_CONNECTION), true);
     return;
   }
-  if (code == 404 || code < 0) {
-    idPadSay(T(STR_LINK_ID_NOT_FOUND), true);
-    return;
-  }
+  // Before "not found" too: -2 is a spool the server did send, as a document
+  // the scale could not read, and the catch-all below swallowed it.
   if (code == -2) {
     idPadSay(T(STR_LINK_JSON_ERR), true);
+    return;
+  }
+  if (code == 404 || code < 0) {
+    idPadSay(T(STR_LINK_ID_NOT_FOUND), true);
     return;
   }
   if (code != 200) {
