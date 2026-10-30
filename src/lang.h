@@ -1892,6 +1892,11 @@ enum StringID {
   STR_ID_PAD_COPY_TITLE,
   STR_ID_PAD_WHERE,
 
+  // Tag view: write a CFS record onto a 4 byte MIFARE tag on request
+  STR_TV_CFS_WRITE,            // tag view button for a 4 byte MIFARE tag, %d = spool id
+  STR_TW_CFS_RW_TITLE,         // the question behind it
+  STR_TW_CFS_RW_HINT,          // and what it writes and what it leaves alone
+
   STR_COUNT
 };
 

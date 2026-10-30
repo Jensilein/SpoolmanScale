@@ -8,6 +8,7 @@
 #include "app/deferred_actions.h"
 #include "hardware/sd_logger.h"
 #include "services/tag_write.h"
+#include "services/tag_family.h"
 #include "services/user_options.h"
 #include "tag_write_popup.h"
 #include "theme.h"
@@ -68,6 +69,7 @@
 static lv_obj_t* s_view = nullptr;
 static bool s_erase_pending = false;
 static bool s_write_pending = false;
+static bool s_cfs_pending   = false;
 
 // What the card was built from. Taken on every pass and compared whole, and
 // the card is built again when anything in it differs: a tag put down or
@@ -82,6 +84,7 @@ struct Shown {
   bool     found;
   int      spool_id;
   char     spool_name[32];
+  bool     here;        // the shown tag is the one the scale reads right now
 };
 static Shown s_shown;
 
@@ -97,6 +100,7 @@ static void snapshot(Shown* s) {
   s->found     = sm_found && sm_id > 0;
   s->spool_id  = s->found ? sm_id : 0;
   if (s->found) snprintf(s->spool_name, sizeof(s->spool_name), "%s", sm_filament_name);
+  s->here      = s->uid[0] && strcmp(s->uid, g_tag.uid_str) == 0;
 }
 
 bool isTagViewOpen() { return s_view != nullptr; }
@@ -104,6 +108,7 @@ bool isTagViewOpen() { return s_view != nullptr; }
 void closeTagView() {
   s_erase_pending = false;
   s_write_pending = false;
+  s_cfs_pending   = false;
   releaseScreen(&s_view);
 }
 
@@ -116,6 +121,7 @@ static void dropView() {
 static void closeCb(lv_event_t* e)  { closeTagView(); }
 static void eraseCb(lv_event_t* e)  { s_erase_pending = true; }
 static void writeCb(lv_event_t* e)  { s_write_pending = true; }
+static void cfsCb(lv_event_t* e)    { s_cfs_pending = true; }
 
 // ---- pieces --------------------------------------------------
 
@@ -432,6 +438,32 @@ static void buildButtons(lv_obj_t* box, const Shown& s) {
   if (!s.reader_ok || !s.uid[0]) return;
   divider(box, TV_DIV2_Y);
 
+  // A 4 byte MIFARE tag cannot take an NTAG record, but with Creality tags on
+  // it can take a CFS record: blank stickers and Creality's own tags. The
+  // scale offers that by itself after a link or when a tag of ours is out of
+  // date - but not for a tag it could not read at the time, and an original
+  // tag that dropped out while it was linked was left with the old filament
+  // on it and no way to write it from the scale (26.10.2026, spool 38).
+  // Bambu's tags are signed and stay read only.
+  if (s.kind == TAG_KIND_MIFARE && g_creality_tags) {
+    unsigned b[4];
+    bool bambu = false;
+    if (sscanf(s.uid, "%2x:%2x:%2x:%2x", &b[0], &b[1], &b[2], &b[3]) == 4) {
+      const uint8_t u[4] = {(uint8_t)b[0], (uint8_t)b[1], (uint8_t)b[2], (uint8_t)b[3]};
+      bambu = tagFamilyGet(u) == TAG_FAMILY_BAMBU;
+    }
+    if (!bambu) {
+      // The write goes to the tag the scale reads right now; the card may
+      // show a tag the reader has just lost.
+      const bool here = s.here;
+      char cfs[40];
+      if (!s.found) copyT(cfs, sizeof(cfs), STR_TV_NOSPOOL);
+      else          snprintf(cfs, sizeof(cfs), T(STR_TV_CFS_WRITE), s.spool_id);
+      button(box, (TV_BOX_W - TV_BTN_W) / 2, cfs, false, s.found && here, cfsCb);
+      return;
+    }
+  }
+
   if (s.kind != TAG_KIND_NTAG) {
     lv_obj_t* l = lv_label_create(box);
     if (!l) return;
@@ -525,6 +557,7 @@ void handleTagViewDeferredActions() {
   if (!s_view) {
     s_erase_pending = false;
     s_write_pending = false;
+    s_cfs_pending   = false;
     return;
   }
 
@@ -536,6 +569,16 @@ void handleTagViewDeferredActions() {
     dropView();
     logSD("TAGVIEW: erase asked");
     askTagEraseFromView();
+    return;
+  }
+  if (s_cfs_pending) {
+    s_cfs_pending = false;
+    const int id = s_shown.spool_id;
+    dropView();
+    logSDf("TAGVIEW: CFS write asked, spool %d, tag %s", id, s_shown.uid);
+    // Variant 4: its own question, and a tag that opens with the Creality
+    // key is written over too. mifareWrite() leaves any other tag alone.
+    if (id > 0) showTagWriteAskPopupFmt(id, TAG_FMT_CREALITY, 4);
     return;
   }
   if (s_write_pending) {
