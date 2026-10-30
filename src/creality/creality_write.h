@@ -23,3 +23,7 @@ bool crealityRecordForSpool(JsonObjectConst spool, int spool_id, char rec[41]);
 bool crealityBuildJob(JsonObjectConst spool, int spool_id, MifareWriteJob* job,
                       char* text, size_t text_len);
 void crealityWritten(const uint8_t uid[4], const char* text);
+
+// Sector 1's data blocks hold a Creality record. Also what the factory key
+// probe asks to recognise a CFS write that stopped before the trailer.
+bool crealityIsRecord(const uint8_t blocks[MIFARE_DATA_BLOCKS_MAX][MIFARE_BLOCK_BYTES]);

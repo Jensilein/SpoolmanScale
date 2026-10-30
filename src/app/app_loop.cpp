@@ -28,6 +28,7 @@
 #include "snapmaker/snapmaker_scan.h"
 #include "creality/creality_scan.h"
 #include "services/mifare_write.h"
+#include "creality/creality_write.h"
 #include "services/tag_family.h"
 #include "hardware/display_power.h"
 #include "hardware/nfc.h"
@@ -2056,10 +2057,10 @@ void appLoop() {
           // pays one refusal on its first placement; after that its family is
           // stored and it goes straight to the Bambu scan.
           if (g_creality_tags && family == TAG_FAMILY_NOT_CREALITY) {
-            factory = mifareProbeFactory(uid, uid_str);
+            factory = mifareProbeFactory(uid, uid_str, crealityIsRecord);
           }
           if (g_creality_tags && family == TAG_FAMILY_BLANK) {
-            factory = mifareProbeFactory(uid, uid_str);
+            factory = mifareProbeFactory(uid, uid_str, crealityIsRecord);
             if (factory != MIFARE_FACTORY_BLANK) {
               tagFamilySet(uid, TAG_FAMILY_UNKNOWN);
               family = TAG_FAMILY_UNKNOWN;
@@ -2085,7 +2086,7 @@ void appLoop() {
             nfc_retry_count = NFC_MAX_RETRIES;
             last_nfc_check_ms = 0;
           } else if (g_creality_tags && family == TAG_FAMILY_CREALITY &&
-                     (factory = mifareProbeFactory(uid, uid_str)) != MIFARE_FACTORY_REFUSED) {
+                     (factory = mifareProbeFactory(uid, uid_str, crealityIsRecord)) != MIFARE_FACTORY_REFUSED) {
             // Remembered as Creality, but now on the factory key: erased
             // since (CFtag, FilaStation). On 14.10.2026 both tags of spool 9
             // were erased with CFtag and the scale kept trying the Creality
@@ -2104,7 +2105,7 @@ void appLoop() {
             memcpy(g_tag.uid, uid, 4);
             snprintf(g_tag.uid_str, sizeof(g_tag.uid_str), "%s", uid_str);
           } else if (creality_first && family == TAG_FAMILY_UNKNOWN &&
-                     (factory = mifareProbeFactory(uid, uid_str)) != MIFARE_FACTORY_REFUSED) {
+                     (factory = mifareProbeFactory(uid, uid_str, crealityIsRecord)) != MIFARE_FACTORY_REFUSED) {
             // Refused the Creality key, opens with the factory key: a plain
             // sticker, blank ones most likely waiting to be linked and written
             // as a CFS tag. The Bambu probe would refuse it too and knock it
