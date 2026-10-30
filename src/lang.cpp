@@ -4145,6 +4145,18 @@ const char* const STRINGS[][3] = {
     "Utiliser" },  // STR_DENSITY_TAKE
   { "Ändern", "Change",
     "Modifier" },  // STR_DENSITY_CHANGE
+  // Tag view: write a CFS record onto a 4 byte MIFARE tag on request
+  { "CFS-Tag #%d schreiben",
+    "Write CFS tag #%d",
+    "Écrire tag CFS #%d" },  // STR_TV_CFS_WRITE
+  { "CFS-Tag neu beschreiben?",
+    "Write the CFS tag again?",
+    "Réécrire le tag CFS ?" },  // STR_TW_CFS_RW_TITLE
+  { "Schreibt die Daten dieser Spule auf den Tag. Nur leere und Creality-Tags, alle anderen bleiben unverändert.",
+    "Writes this spool's data to the tag. Only blank and Creality tags, all others stay as they are.",
+    "Écrit les données de la bobine sur le tag. Tags vierges et Creality seulement." },  // STR_TW_CFS_RW_HINT
+  // Tag view: the CFS button, inert while the shown tag is not on the reader
+  { "Tag nicht auf dem Leser", "Tag not on the reader", "Tag hors du lecteur" },  // STR_TV_CFS_NOT_HERE
 };
 
 StringID tagWriteResultString(uint8_t code) {
