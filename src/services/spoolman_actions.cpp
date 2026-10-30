@@ -78,10 +78,12 @@ int patchSpoolmanWeight(float remaining, bool skip_cap_check) {
   // BamBuddy's own inventory stores what was consumed and derives the rest
   // from the label weight, so it cannot represent a spool holding more than
   // the label says - the value would read as full again on the next scan.
-  // Ask rather than let that happen silently. Behind Spoolman the remaining
-  // weight is stored directly and there is no ceiling.
+  // Spoolman behind BamBuddy does the same: it keeps only
+  // used_weight = max(initial_weight - remaining, 0), so 1035.9 g on a
+  // 1000 g label reads back as 1000 g. Ask rather than let that happen
+  // silently, in both inventory modes.
   // The tolerance keeps rounding noise on a genuinely full spool from asking.
-  if (!skip_cap_check && backendIsBamBuddy() && bbInventoryMode() == BB_INV_LOCAL &&
+  if (!skip_cap_check && backendIsBamBuddy() &&
       sm_total > 0.0f && remaining > sm_total + BB_CAP_TOLERANCE_G) {
     bb_cap_measured_g = remaining;
     bb_cap_label_g    = sm_total;

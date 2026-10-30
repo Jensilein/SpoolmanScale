@@ -531,9 +531,10 @@ void showConfirmPopup(const char* msg, int action) {
 //  BAMBUDDY: MEASUREMENT ABOVE THE LABEL WEIGHT
 //
 //  BamBuddy's built-in inventory keeps the consumed grams and derives the
-//  rest, so a spool holding more than its label says cannot be stored - the
-//  remainder clamps back to full. Raising the label is the only way to keep
-//  the number, and that changes a field the user owns, so it is asked.
+//  rest, and Spoolman behind BamBuddy clamps the same way, so a spool holding
+//  more than its label says cannot be stored - the remainder clamps back to
+//  full. Raising the label is the only way to keep the number, and that
+//  changes a field the user owns, so it is asked.
 // ============================================================
 void showBamBuddyCapPopup(float measured_g, float label_g) {
   releaseScreen(&s_cap_popup);

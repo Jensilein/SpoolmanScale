@@ -467,9 +467,9 @@ const char* const STRINGS[][3] = {
   { "Mehr als das Etikett",
     "More than the label",
     "Dépasse l'étiquette" },  // STR_BB_CAP_TITLE
-  { "Gemessen: %.0f g. Das Etikett sagt %.0f g. BamBuddy kann nicht mehr speichern, als das Etikett hergibt - der Rest stünde danach wieder auf voll.",
-    "Measured: %.0f g. The label says %.0f g. BamBuddy cannot store more than the label allows, so the remainder would read as full again.",
-    "Mesuré : %.0f g. L'étiquette indique %.0f g. BamBuddy ne peut pas enregistrer plus que l'étiquette : le poids restant serait ramené à celui d'une bobine pleine." },  // STR_BB_CAP_BODY
+  { "Gemessen: %.0f g. Das Etikett sagt %.0f g. Mehr, als das Etikett hergibt, lässt sich nicht speichern - der Rest stünde danach wieder auf voll.",
+    "Measured: %.0f g. The label says %.0f g. No more than the label allows can be stored, so the remainder would read as full again.",
+    "Mesuré : %.0f g. L'étiquette indique %.0f g. Impossible d'enregistrer plus que l'étiquette : le poids restant serait ramené à celui d'une bobine pleine." },  // STR_BB_CAP_BODY
   { "Etikett auf %.0f g anheben",
     "Raise label to %.0f g",
     "Porter l'étiquette à %.0f g" },  // STR_BB_CAP_RAISE
