@@ -4129,6 +4129,22 @@ const char* const STRINGS[][3] = {
     "Copier une bobine par ID" },  // STR_ID_PAD_COPY_TITLE
   { "Die ID steht in Spoolman und auf dem Etikett.", "The ID is shown in Spoolman and on the label.",
     "L'ID figure dans Spoolman et sur l'étiquette." },  // STR_ID_PAD_WHERE
+  { "Dichte unbekannt, bitte eingeben", "Density unknown, please enter it",
+    "Densité inconnue, à saisir" },  // STR_TAGNEW_NEEDS_DENSITY
+  { "Eingeben", "Enter",
+    "Saisir" },  // STR_TAGNEW_DENSITY_BTN
+  { "Dichte des Filaments", "Filament density",
+    "Densité du filament" },  // STR_DENSITY_PAD_TITLE
+  { "In g/cm3, 0.50 bis 4.00. PLA etwa 1.24, PETG 1.27.", "In g/cm3, 0.50 to 4.00. PLA about 1.24, PETG 1.27.",
+    "En g/cm3, 0.50 à 4.00. PLA env. 1.24, PETG 1.27." },  // STR_DENSITY_PAD_HINT
+  { "Hinterlegte Dichte für %s: %.2f", "Typical density for %s: %.2f",
+    "Densité typique pour %s : %.2f" },  // STR_TAGNEW_DENSITY_TYPICAL
+  { "Typisch für %s: %.2f g/cm3. OK übernimmt den Wert, oder einen eigenen eintippen.", "Typical for %s: %.2f g/cm3. OK takes it, or type your own.",
+    "Typique pour %s : %.2f g/cm3. OK la reprend, ou saisissez la vôtre." },  // STR_DENSITY_PAD_TYPICAL
+  { "Übernehmen", "Use",
+    "Utiliser" },  // STR_DENSITY_TAKE
+  { "Ändern", "Change",
+    "Modifier" },  // STR_DENSITY_CHANGE
 };
 
 StringID tagWriteResultString(uint8_t code) {

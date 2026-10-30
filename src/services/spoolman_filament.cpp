@@ -400,6 +400,18 @@ static bool planExisting(const char* base_url, const TagCreateInput& in, TagFila
   return false;
 }
 
+// The last word on a density nothing else had: the one typed in on the card,
+// or a plan that asks for it. Spoolman refuses a filament without one, and
+// the scale used to stop here with "failed (HTTP 0)", as if the server were
+// gone. False when the plan stops.
+static bool densityOrAsk(const TagCreateInput& in, TagFilamentPlan* plan) {
+  if (plan->density > 0.0f) return true;
+  if (in.user_density > 0.0f) { plan->density = in.user_density; return true; }
+  logSDf("Spoolman: no density known for %s, asking for one", in.material);
+  plan->state = TFS_NEEDS_DENSITY;
+  return false;
+}
+
 // A filament from the tag alone: only with names for it (article number and
 // colour), and only with a density, which Spoolman requires.
 static void planFromTag(const char* base_url, const TagCreateInput& in, TagFilamentPlan* plan) {
@@ -407,11 +419,7 @@ static void planFromTag(const char* base_url, const TagCreateInput& in, TagFilam
   plan->density = databaseDensity(base_url, in.vendor, in.material);
   if (plan->density <= 0.0f) plan->density = materialDensity(base_url, in.material);
   if (plan->density <= 0.0f) plan->density = productDensity(base_url, in);
-  if (plan->density <= 0.0f) {
-    logSDf("Spoolman: no density known for %s, filament not created", in.material);
-    plan->state = TFS_FAILED;
-    return;
-  }
+  if (!densityOrAsk(in, plan)) return;
   tagCreateSpoolmanName(in, plan->name, sizeof(plan->name));
   plan->spool_weight_g = in.spool_weight_g;
   plan->state = TFS_CREATE_TAG;
@@ -432,11 +440,7 @@ void spoolmanPlanTagFilament(const char* base_url, const TagCreateInput& in,
   // way a filament from a tag does.
   if (picked && plan->density <= 0.0f) plan->density = databaseDensity(base_url, in.vendor, in.material);
   if (picked && plan->density <= 0.0f) plan->density = materialDensity(base_url, in.material);
-  if (picked && plan->density <= 0.0f) {
-    logSDf("Spoolman: no density known for %s, filament not created", in.material);
-    plan->state = TFS_FAILED;
-    return;
-  }
+  if (picked && !densityOrAsk(in, plan)) return;
   if (in_db) { plan->state = TFS_CREATE_DB; return; }
   planFromTag(base_url, in, plan);
 }

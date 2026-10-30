@@ -17,7 +17,8 @@
 // ============================================================
 
 // Reads only. Fills plan with what creating the spool would take: TFS_FOUND with the
-// filament's id, TFS_CREATE_DB, TFS_CREATE_TAG, TFS_NEEDS_CATALOG, or
+// filament's id, TFS_CREATE_DB, TFS_CREATE_TAG, TFS_NEEDS_CATALOG,
+// TFS_NEEDS_DENSITY when no source has one and the user typed none, or
 // TFS_FAILED when the server could not be asked.
 void spoolmanPlanTagFilament(const char* base_url, const TagCreateInput& in,
                              TagFilamentPlan* plan);

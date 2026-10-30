@@ -76,3 +76,30 @@ const char* densitySupportBase(const char* tag_material) {
   }
   return nullptr;
 }
+
+// The median density of each material across SpoolmanDB, every maker
+// together (9 457 filaments on Spoolman 0.27.0, 30.10.2026). Only materials
+// with enough entries to have a typical value, and only the exact name: a
+// support or a filled variant is a different material ("PLA-S" is 1.33,
+// "PLA" 1.24), so nothing is matched by its prefix.
+static const struct { const char* material; float density; } TYPICAL[] = {
+  { "PLA",     1.24f }, { "PLA+",    1.24f }, { "PLA-CF",  1.24f },
+  { "PETG",    1.27f }, { "PETG-CF", 1.26f }, { "PETG-GF", 1.27f },
+  { "PCTG",    1.24f }, { "PET-CF",  1.30f },
+  { "ABS",     1.06f }, { "ABS+",    1.04f }, { "ABS-GF",  1.08f },
+  { "ASA",     1.07f }, { "ASA-CF",  1.11f },
+  { "TPU",     1.20f }, { "TPU-95A", 1.22f }, { "TPU-90A", 1.23f }, { "TPE", 1.24f },
+  { "PC",      1.20f }, { "PC-CF",   1.36f },
+  { "PA",      1.12f }, { "PA6",     1.22f }, { "PA12",    1.10f }, { "PA6-CF", 1.12f },
+  { "HIPS",    1.04f }, { "PVA",     1.22f }, { "PVB",     1.10f }, { "PHA",    1.21f },
+};
+
+float densityTypical(const char* material) {
+  if (!material) return 0.0f;
+  const char* m;
+  const size_t len = trimmedSpan(material, &m);
+  for (const auto& t : TYPICAL) {
+    if (len == strlen(t.material) && sameFolded(m, t.material, len)) return t.density;
+  }
+  return 0.0f;
+}

@@ -196,6 +196,7 @@ STR_TW_BUSY_ERASE	20	360	NEVER	src/ui/tag_busy_popup.cpp:70 card title, UI_POPUP
 STR_LIST_RELOAD	14	94	NEVER	src/ui/spool_flow.cpp listReloadStrip: LINK_RELOAD_W 110 button, 8 px air each side
 STR_COPY_CARD_WEIGHT	16	360	NEVER	src/ui/copy_confirm_popup.cpp line 3 of the card, UI_POPUP_W - UI_CARD_TEXT_PAD
 STR_COPY_CARD_CREATE	18	150	NEVER	src/ui/copy_confirm_popup.cpp 170 px answer button, 10 px air each side
+STR_TAGNEW_DENSITY_BTN	18	120	NEVER	src/ui/tag_create_popup.cpp 140 px answer button (TCP_ANSWER_W), 10 px air each side
 STR_BT_DEVICES	16	320	NEVER	src/ui/bluetooth_screen.cpp makeListBtn title, text_w 320
 STR_PRN_TITLE	14	90	NEVER	src/ui/ble_devices_screen.cpp the role in a row arrow slot
 STR_PRN_NONE	12	320	NEVER	src/ui/bluetooth_screen.cpp makeListBtn sub, text_w 320
@@ -490,3 +491,5 @@ STR_SETUP_GO	16	440	NEVER	src/ui/setup_frame.cpp main bar button
 STR_BTN_WIFI_CHANGE	16	134	NEVER	src/ui/wifi_connect_view.cpp quiet bar button
 STR_ID_PAD_LINK_TITLE	18	330	NEVER	src/ui/num_pad.cpp header title between back and close
 STR_ID_PAD_COPY_TITLE	18	330	NEVER	src/ui/num_pad.cpp header title between back and close
+STR_DENSITY_TAKE	18	120	NEVER	src/ui/tag_create_popup.cpp 140 px answer button (TCP_ANSWER_W), 10 px air each side
+STR_DENSITY_CHANGE	14	64	NEVER	src/ui/tag_create_popup.cpp 80 px price button, 8 px air each side

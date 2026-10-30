@@ -89,6 +89,8 @@ struct TagCreateInput {
   char  db_color_name[64];
   char  db_line[32];
   char  db_material_key[24];
+  // g/cm3 typed in on the card when no source had one, 0 until then.
+  float user_density;
 };
 
 // A database entry found for a tag's filament (services/tag_db_match.h
@@ -131,7 +133,10 @@ enum TagFilamentState : uint8_t {
   TFS_CREATE_TAG,      // new, from what the tag and its input file know
   TFS_NOT_NEEDED,      // BamBuddy: a spool carries its filament itself
   TFS_NEEDS_CATALOG,   // not in the inventory, and no names to create it by
-  TFS_FAILED           // the server could not be asked: http_code
+  TFS_FAILED,          // the server could not be asked: http_code
+  // Spoolman: everything known but a density, which it requires. The user
+  // types one into TagCreateInput.user_density and the plan is asked again.
+  TFS_NEEDS_DENSITY
 };
 
 struct TagFilamentPlan {

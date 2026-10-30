@@ -1,8 +1,9 @@
 """Compile the production density rules and check which densities are
 plausible, when a database entry is the product named on a Bambu tag (the
 vendor, the product name with or without a colour word after it, the net
-weight where both name one), and which material a support code is listed
-under (services/density_rules.cpp)."""
+weight where both name one), which material a support code is listed
+under, and which typical density a material is offered
+(services/density_rules.cpp)."""
 import subprocess
 import tempfile
 from pathlib import Path
@@ -56,6 +57,13 @@ int main() {
   assert(densitySupportBase("PLA-SX") == nullptr);
   assert(densitySupportBase("") == nullptr);
   assert(densitySupportBase(nullptr) == nullptr);
+  // Typical values: exact names only, a support code is not its base.
+  assert(fabsf(densityTypical("PLA") - 1.24f) < 0.001f);
+  assert(fabsf(densityTypical(" petg ") - 1.27f) < 0.001f);
+  assert(fabsf(densityTypical("tpu-95a") - 1.22f) < 0.001f);
+  assert(densityTypical("PLA-S") == 0.0f);
+  assert(densityTypical("PAHT-CF") == 0.0f);
+  assert(densityTypical("") == 0.0f && densityTypical(nullptr) == 0.0f);
   return 0;
 }
 '''

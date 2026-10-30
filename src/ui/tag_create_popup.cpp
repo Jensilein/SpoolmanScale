@@ -16,6 +16,7 @@
 #include "app_config.h"
 #include "hardware/sd_logger.h"
 #include "lang.h"
+#include "services/density_rules.h"
 #include "services/server_reach.h"
 #include "services/spool_cache.h"
 #include "services/spool_start.h"
@@ -23,6 +24,7 @@
 #include "services/tag_db_match.h"
 #include "services/user_options.h"
 #include "ui/main_screen_helpers.h"
+#include "ui/num_pad.h"
 #include "ui/price_pad.h"
 #include "ui/spool_flow_internal.h"
 #include "ui/tag_db_diff_popup.h"
@@ -36,6 +38,8 @@
 // The answer row: create and cancel on either side, the price between them.
 #define TCP_PRICE_W  80
 #define TCP_ANSWER_W ((UI_POPUP_W - 2 * UI_CARD_ROW_X - 2 * TCP_GAP - TCP_PRICE_W) / 2)
+// A density typed in when no source had one: "1.24".
+#define TCP_DENSITY_MAX_CHARS  4
 
 // What the loop is to do for the card on its next pass.
 enum TcpJob : uint8_t { TCP_IDLE = 0, TCP_PLAN, TCP_CREATE };
@@ -135,8 +139,38 @@ static void showStatus(const char* text, uint32_t color, bool can_create) {
   else            lv_obj_add_state(s_btn_ok, LV_STATE_DISABLED);
 }
 
+// The plan lacks a density and the table has one for the material: the card
+// offers it, and the price button makes way for changing it.
+static bool densityOffered() {
+  return s_plan.state == TFS_NEEDS_DENSITY && densityTypical(s_in.material) > 0.0f;
+}
+
+// What the card says while the plan lacks a density, with the material's
+// typical value where there is one.
+static void showDensityStatus() {
+  const float typical = densityTypical(s_in.material);
+  if (typical <= 0.0f) { showStatus(T(STR_TAGNEW_NEEDS_DENSITY), UI_COL_WARN, true); return; }
+  char buf[96];
+  snprintf(buf, sizeof(buf), T(STR_TAGNEW_DENSITY_TYPICAL), s_in.material, typical);
+  showStatus(buf, UI_COL_WARN, true);
+}
+
+// The create button takes the offered density, asks for one where there is
+// none, and creates otherwise.
+static void setOkCaption() {
+  if (!s_btn_ok) return;
+  int text_id = STR_COPY_CARD_CREATE;
+  if (s_plan.state == TFS_NEEDS_DENSITY)
+    text_id = densityOffered() ? STR_DENSITY_TAKE : STR_TAGNEW_DENSITY_BTN;
+  lv_label_set_text(lv_obj_get_child(s_btn_ok, 0), T(text_id));
+}
+
+static void refreshPrice();
+
 static void showPlan() {
   char buf[96];
+  setOkCaption();
+  refreshPrice();
   switch (s_plan.state) {
     case TFS_FOUND:
       snprintf(buf, sizeof(buf), T(STR_TAGNEW_FOUND), s_plan.filament_id);
@@ -152,6 +186,7 @@ static void showPlan() {
     case TFS_CREATE_TAG:    showStatus(T(STR_TAGNEW_FROM_TAG), UI_COL_ACCENT, true);        break;
     case TFS_NOT_NEEDED:    showStatus(T(STR_TAGNEW_BAMBUDDY), UI_COL_INK_SOFT, true);      break;
     case TFS_NEEDS_CATALOG: showStatus(T(STR_TAGNEW_NEEDS_CATALOG), UI_COL_WARN, false);    break;
+    case TFS_NEEDS_DENSITY: showDensityStatus();                                           break;
     default:
       snprintf(buf, sizeof(buf), T(STR_TAGNEW_FAILED), s_plan.http_code);
       showStatus(buf, UI_COL_BAD_TEXT, false);
@@ -303,6 +338,7 @@ static lv_obj_t* answerButton(lv_obj_t* box, int x, int w, bool ok, int text_id)
 // The price button shows what was typed in, or that there is none yet.
 static void refreshPrice() {
   if (!s_lbl_price) return;
+  if (densityOffered()) { lv_label_set_text(s_lbl_price, T(STR_DENSITY_CHANGE)); return; }
   if (s_price <= 0.0f) { lv_label_set_text(s_lbl_price, T(STR_TAGNEW_PRICE_BTN)); return; }
   char buf[16];
   snprintf(buf, sizeof(buf), "%.2f", s_price);
@@ -313,6 +349,8 @@ static void onPrice(float price) {
   s_price = price;
   refreshPrice();
 }
+
+static void showDensityPad();
 
 static void buildPriceButton(lv_obj_t* box) {
   lv_obj_t* btn = lv_btn_create(box);
@@ -326,6 +364,11 @@ static void buildPriceButton(lv_obj_t* box) {
   lv_obj_set_style_shadow_width(btn, 0, 0);
   lv_obj_add_event_cb(btn, [](lv_event_t*) {
     if (s_job != TCP_IDLE) return;
+    if (densityOffered()) {
+      logSD("BTN: TagCreate -> Change density");
+      showDensityPad();
+      return;
+    }
     logSD("BTN: TagCreate -> Price");
     showPricePad(s_price, onPrice);
   }, LV_EVENT_CLICKED, NULL);
@@ -336,11 +379,68 @@ static void buildPriceButton(lv_obj_t* box) {
   refreshPrice();
 }
 
+// Only the plan is asked for: the loop runs it with the density in the
+// input, and the card says what it found.
+static void takeDensity(float density) {
+  s_in.user_density = density;
+  const bool typical = fabsf(density - densityTypical(s_in.material)) < 0.005f;
+  logSDf("TagCreate: density %.2f %s", density,
+         typical ? "taken from the typical values" : "typed in");
+  showStatus(T(STR_TAGNEW_SEARCHING), UI_COL_INK_SOFT, false);
+  s_job = TCP_PLAN;
+}
+
+// From the pad's own button.
+static bool onDensityDone(const char* text) {
+  const float d = atof(text);
+  if (!densityPlausible(d)) {
+    numPadSetHint(T(STR_DENSITY_PAD_HINT), true);
+    return false;
+  }
+  takeDensity(d);
+  return true;
+}
+
+// Over the card, which stays as it is: leaving the pad is back on it. With a
+// typical value it opens on that value: OK takes it, the first key replaces it.
+static void showDensityPad() {
+  const float typical = densityTypical(s_in.material);
+  char initial[8] = "", hint[160];
+  if (typical > 0.0f) {
+    snprintf(initial, sizeof(initial), "%.2f", typical);
+    snprintf(hint, sizeof(hint), T(STR_DENSITY_PAD_TYPICAL), s_in.material, typical);
+  } else {
+    copyT(hint, sizeof(hint), STR_DENSITY_PAD_HINT);
+  }
+  NumPadSpec spec = {};
+  spec.title      = T(STR_DENSITY_PAD_TITLE);
+  spec.hint       = hint;
+  spec.unit       = "";
+  spec.primary    = T(STR_BTN_OK);
+  spec.initial    = initial;
+  spec.max_chars  = TCP_DENSITY_MAX_CHARS;
+  spec.decimal    = true;
+  spec.help_title = -1;
+  spec.on_done    = onDensityDone;
+  spec.on_leave   = nullptr;
+  showNumPad(spec);
+}
+
 static void buildAnswers(lv_obj_t* box) {
   s_btn_ok = answerButton(box, UI_CARD_ROW_X, TCP_ANSWER_W, true, STR_COPY_CARD_CREATE);
   lv_obj_add_state(s_btn_ok, LV_STATE_DISABLED);   // until the lookup has answered
   lv_obj_add_event_cb(s_btn_ok, [](lv_event_t*) {
     if (s_job != TCP_IDLE) return;
+    if (densityOffered()) {
+      logSD("BTN: TagCreate -> Take density");
+      takeDensity(densityTypical(s_in.material));
+      return;
+    }
+    if (s_plan.state == TFS_NEEDS_DENSITY) {
+      logSD("BTN: TagCreate -> Density");
+      showDensityPad();
+      return;
+    }
     logSD("BTN: TagCreate -> Create");
     showStatus(T(STR_TAGNEW_CREATING), UI_COL_INK_SOFT, false);
     s_job = TCP_CREATE;

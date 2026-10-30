@@ -29,6 +29,10 @@
 //                where both name one. A longer word is another product:
 //                "Support for PLA/PETG Black" is not "Support for PLA".
 //
+//    typical     A material's median density across SpoolmanDB, when every
+//                source above came back empty: offered on the card, taken
+//                only when the user says so.
+//
 //    support     The light form of the database has no word search, only
 //                the maker's list of one material. For the three support
 //                codes the base material to list is known; any other
@@ -58,3 +62,9 @@ bool densityEntryIsProduct(const char* entry_vendor, const char* entry_name,
 // The material the database lists a Bambu support code under ("ABS-S" ->
 // "ABS"), in any case of letters; nullptr for every other material.
 const char* densitySupportBase(const char* tag_material);
+
+// The typical density of a material, offered when no source had one: the
+// median across SpoolmanDB, for the exact material name in any case of
+// letters and with blanks at both ends ignored; 0 for a material without a
+// typical value. Only ever offered to the user, never stored unasked.
+float densityTypical(const char* material);
