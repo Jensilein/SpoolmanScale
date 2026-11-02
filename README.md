@@ -34,6 +34,7 @@ Sie laufen im Container `filament-tools` auf der Synology DS920+ (Container Mana
 | `mail.json` | E-Mail-Versand: `mail_server`, `mail_port`, `mail_benutzer`, `mail_passwort`, `mail_von`, `mail_an` |
 | `*.log` | Protokolle (über 2 MB → `*.log.1`) |
 | `.spoolman_waechter_state.json` | was der Wächter schon gemeldet hat |
+| `ort_sync.fails` | wie oft `ort_sync.py` zuletzt hintereinander abgebrochen hat |
 
 ## Nachschauen
 
@@ -64,6 +65,16 @@ Der Wächter prüft jede Minute, meldet einen Fehler aber erst, wenn er so lange
 | Dienst nicht erreichbar | 5 min |
 
 Ändern in `spoolman_waechter.json`, z. B. `"wartezeiten": {"tag_unbeschrieben": 15}`.
+
+### Abbrüche von `ort_sync.py`
+
+Der Wächter meldet `ort_sync.py`, sobald in den letzten Zeilen von `ort_sync.log` ein `[ERROR]` steht. Ist Spoolman, Bambuddy oder CFSync nicht erreichbar oder antwortet nicht innerhalb von `timeout_s` (auch nach einem Wiederholversuch), bricht `ort_sync.py` den Lauf ab und ändert nichts. Seit 02.11.2026 gilt dabei:
+
+- 1. und 2. Abbruch in Folge: nur `[WARNING] Abbruch, nichts geaendert (n. Mal in Folge, Alarm ab 3)` – keine Meldung.
+- ab dem 3. Abbruch in Folge (bei 5-Minuten-Takt also nach ca. 15 Minuten am Stück): `[ERROR]` – der Wächter meldet.
+- Ein erfolgreicher Lauf setzt den Zähler zurück. Der Zähler steht in `ort_sync.fails` im Datenordner; die Schwelle ist `FAILS_ALARM` in `ort_sync.py`.
+
+Hintergrund: Sind beide K2 Plus ausgeschaltet, versucht CFSync jede Minute, sie neu zu erreichen, und beantwortet `/api/ui/state` dabei zeitweise erst nach über 30 s. Am 02.11.2026 führte das zu über 30 Fehlermeldungen am Tag, obwohl nichts kaputt war.
 
 ## Live-Log der FilaStation-Waage (`waage_log_web.py`)
 
