@@ -35,6 +35,8 @@ import requests
 BASE_DIR = os.environ.get("FT_DIR") or os.path.expanduser("~")
 CONFIG_PATH = os.path.join(BASE_DIR, "ort_sync.json")
 LOG_PATH = os.path.join(BASE_DIR, "ort_sync.log")
+FAILS_PATH = os.path.join(BASE_DIR, "ort_sync.fails")
+FAILS_ALARM = 3  # erst ab so vielen Abbruechen in Folge als Fehler melden (Waechter sucht [ERROR])
 
 DEFAULTS = {
     "dry_run": True,
@@ -181,12 +183,36 @@ def wanted_locations(cfg, spools, bambuddy, cfsync):
     return wanted
 
 
+def _read_fails():
+    try:
+        with open(FAILS_PATH) as f:
+            return int(f.read().strip() or 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def _write_fails(n):
+    try:
+        with open(FAILS_PATH, "w") as f:
+            f.write(str(n))
+    except OSError:
+        pass
+
+
 def run(cfg, dry):
     try:
         spools, bambuddy, cfsync = fetch_all(cfg)
     except Exception as e:
-        log.error(f"Abbruch, nichts geaendert: {e}")
+        # Einzelne Aussetzer (z. B. CFSync haengt, wenn die K2 Plus aus sind) nur als
+        # Warnung; erst ab FAILS_ALARM Abbruechen in Folge als Fehler.
+        n = _read_fails() + 1
+        _write_fails(n)
+        if n >= FAILS_ALARM:
+            log.error(f"Abbruch, nichts geaendert ({n}. Mal in Folge): {e}")
+        else:
+            log.warning(f"Abbruch, nichts geaendert ({n}. Mal in Folge, Alarm ab {FAILS_ALARM}): {e}")
         return 1
+    _write_fails(0)
 
     wanted = wanted_locations(cfg, spools, bambuddy, cfsync)
     storage = cfg["storage_location"]
