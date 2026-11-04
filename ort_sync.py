@@ -19,6 +19,14 @@ Sicherheitsregeln:
   * "dry_run": true (Standard beim ersten Einrichten) zeigt nur an, was
     geaendert wuerde.
 
+Veraltete CFSync-Verknuepfungen:
+  CFSync loest eine Verknuepfung nur, wenn es das Herausnehmen live sieht. War
+  der K2 dabei aus oder CFSync neu gestartet, bleibt sie im leeren Slot stehen.
+  Meldet der Drucker (mit Live-Daten) einen Slot "unlink_after_min" Minuten lang
+  ununterbrochen als leer, loest ort_sync.py die Verknuepfung ueber
+  POST /api/ui/spoolman/unlink - wie der Knopf "Unlink" in CFSync.
+  0 schaltet das ab.
+
 Aufruf:   python3 ort_sync.py          einmal abgleichen
           python3 ort_sync.py --test   wie dry_run, unabhaengig von der Einstellung
 Einstellungen: ort_sync.json im Ordner $FT_DIR (Standard: Home-Verzeichnis) (wird beim ersten Aufruf mit Standardwerten angelegt)
@@ -37,6 +45,7 @@ CONFIG_PATH = os.path.join(BASE_DIR, "ort_sync.json")
 LOG_PATH = os.path.join(BASE_DIR, "ort_sync.log")
 FAILS_PATH = os.path.join(BASE_DIR, "ort_sync.fails")
 FAILS_ALARM = 3  # erst ab so vielen Abbruechen in Folge als Fehler melden (Waechter sucht [ERROR])
+STALE_PATH = os.path.join(BASE_DIR, "ort_sync.stale.json")  # seit wann ein Slot leer, aber verknuepft ist
 
 DEFAULTS = {
     "dry_run": True,
@@ -53,6 +62,7 @@ DEFAULTS = {
     "storage_location": "Lager",
     "color_tolerance": 60,      # maximaler RGB-Abstand Slotfarbe <-> Spoolman-Farbe
     "timeout_s": 30,            # Mindestwert 30 (CFSync haengt kurz, wenn ein K2 aus ist)
+    "unlink_after_min": 10,     # leere, aber verknuepfte CFS-Slots nach so vielen Minuten loesen (0 = aus)
 }
 MIN_TIMEOUT_S = 30
 RETRY_WAIT_S = 5
@@ -64,6 +74,7 @@ MANAGED_RE = re.compile(r"^.+ - (AMS [A-Z]\d|CFS \d[A-D])$")
 
 log = logging.getLogger("ort_sync")
 frozen_prefixes = []   # Orte an Druckern ohne Live-Daten: nicht anfassen
+stale_links = []       # (printer_id, Anzeigename, Slot, Spool-ID) leer, aber noch verknuepft
 
 
 def load_config():
@@ -131,6 +142,7 @@ def wanted_locations(cfg, spools, bambuddy, cfsync):
     by_id = {s["id"]: s for s in spools}
     wanted = {}
     frozen_prefixes.clear()
+    stale_links.clear()
 
     # AMS ueber Bambuddy
     for a in bambuddy:
@@ -163,6 +175,7 @@ def wanted_locations(cfg, spools, bambuddy, cfsync):
             lv = live.get(slot) or {}
             if not lv.get("present"):
                 log.info(f"CFSync {printer} {slot}: noch mit #{sid} verknuepft, Slot ist aber leer - zaehlt nicht")
+                stale_links.append((p.get("id"), printer, slot, sid))
                 continue
             d = color_distance(lv.get("color"), spool_color(by_id[sid]))
             if d is not None and d > cfg["color_tolerance"]:
@@ -199,6 +212,50 @@ def _write_fails(n):
         pass
 
 
+def _load_stale():
+    try:
+        with open(STALE_PATH) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_stale(d):
+    try:
+        with open(STALE_PATH, "w") as f:
+            json.dump(d, f)
+    except OSError:
+        pass
+
+
+def unlink_stale(cfg, dry):
+    """Loest CFSync-Verknuepfungen, deren Slot schon laenger leer ist."""
+    limit = float(cfg.get("unlink_after_min") or 0) * 60
+    seen = _load_stale()
+    now = time.time()
+    current = {}
+    for pid, printer, slot, sid in stale_links:
+        key = f"{pid}|{slot}|{sid}"
+        since = seen.get(key, now)
+        current[key] = since
+        if not limit or now - since < limit:
+            continue
+        txt = f"CFSync {printer} {slot}: seit {int((now - since) / 60)} min leer, Verknuepfung mit #{sid} geloest"
+        if dry:
+            log.info("[Test] " + txt)
+            continue
+        try:
+            r = requests.post(cfg["cfsync_url"].rstrip("/") + "/api/ui/spoolman/unlink",
+                              json={"printer_id": pid, "slot": slot}, timeout=cfg["timeout_s"])
+            r.raise_for_status()
+            log.info(txt)
+            current.pop(key, None)
+        except Exception as e:
+            log.warning(f"CFSync {printer} {slot}: Loesen der Verknuepfung mit #{sid} fehlgeschlagen: {e}")
+    if not dry:
+        _save_stale(current)
+
+
 def run(cfg, dry):
     try:
         spools, bambuddy, cfsync = fetch_all(cfg)
@@ -215,6 +272,7 @@ def run(cfg, dry):
     _write_fails(0)
 
     wanted = wanted_locations(cfg, spools, bambuddy, cfsync)
+    unlink_stale(cfg, dry)
     storage = cfg["storage_location"]
     changes = 0
     for s in sorted(spools, key=lambda x: x["id"]):

@@ -81,3 +81,7 @@ Hintergrund: Sind beide K2 Plus ausgeschaltet, versucht CFSync jede Minute, sie 
 Läuft auf der FilaStation-Waage selbst (nicht im Container). Zeigt `~/waage.log` im Browser unter
 `http://filastation-waage.local:8090/` – große Schrift (A−/A+), Farben, Filter, Live/Pause, Kopieren –
 wie `/log/live` der Spoolman-Waage. `waage.py` bleibt unverändert; Dienst: `waage-log.service`.
+
+## Veraltete CFSync-Verknüpfungen lösen (ort_sync.py)
+
+CFSync löst eine Verknüpfung nur, wenn es das Herausnehmen live sieht. War der K2 dabei aus oder CFSync neu gestartet, bleibt sie im leeren Slot stehen. Meldet der Drucker (mit Live-Daten) einen Slot `unlink_after_min` Minuten lang (Standard 10) ununterbrochen als leer, löst `ort_sync.py` die Verknüpfung über `POST /api/ui/spoolman/unlink` – wie der Knopf „Unlink“ in CFSync. Log: „CFSync … 1C: seit 11 min leer, Verknuepfung mit #24 geloest“. `0` in `ort_sync.json` schaltet das ab; im Testlauf (`--test`) steht nur „[Test] …“. Merker: `ort_sync.stale.json` im Datenordner.
