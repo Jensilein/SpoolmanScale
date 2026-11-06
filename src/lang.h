@@ -1016,7 +1016,6 @@ enum StringID {
   // that another spool holds.
   STR_TAG2_LINKED_INFO,
   STR_TAG2_FAILED,
-  STR_TAG2_UNCLEAR,
   STR_TAGMOVE_HINT,
   STR_TAGMOVE_BTN,
   STR_TAGMOVE_FAILED,
@@ -1944,6 +1943,7 @@ enum StringID {
   STR_NEWSPOOL_HINT_WRITE,    // its sentence without a printer
   STR_NEWSPOOL_HINT_LABEL,    // its sentence with a label printer
   STR_NEWSPOOL_HINT_NOT_SHOWN,// its sentence when the new spool is not on the display
+  STR_TAG2_UNCLEAR,
   STR_COUNT
 };
 
