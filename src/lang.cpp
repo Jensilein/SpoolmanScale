@@ -2279,9 +2279,6 @@ const char* const STRINGS[][3] = {
     "Both tags now belong to this spool.",
     "Les deux tags appartiennent maintenant à cette bobine." },  // STR_TAG2_LINKED_INFO
   { "Zweites Tag nicht verknüpft", "Second tag not linked", "Second tag non lié" },  // STR_TAG2_FAILED
-  { "Tag nicht sicher gelesen. Spule kurz anheben und genauso wieder hinstellen.",
-    "Tag not read reliably. Lift the spool briefly and put it back the same way.",
-    "Tag mal lu. Soulevez un instant la bobine et reposez-la pareil." },  // STR_TAG2_UNCLEAR
   { "Spule #%d verliert das Tag.",
     "Spool #%d loses the tag.",
     "La bobine #%d perdra ce tag." },  // STR_TAGMOVE_HINT
@@ -4253,6 +4250,9 @@ const char* const STRINGS[][3] = {
   { "Der Tag wird geschrieben und danach geprüft. Fertig ist er erst, wenn die Bestätigung kommt.",
     "The tag is being written and then checked. It is only done once the confirmation appears.",
     "Le tag est écrit puis vérifié. Il n'est prêt qu'à la confirmation." },  // STR_TW_HANDS_OFF_HINT
+  { "Tag nicht sicher gelesen. Spule kurz anheben und genauso wieder hinstellen.",
+    "Tag not read reliably. Lift the spool briefly and put it back the same way.",
+    "Tag mal lu. Soulevez un instant la bobine et reposez-la pareil." },  // STR_TAG2_UNCLEAR
 };
 
 StringID tagWriteResultString(uint8_t code) {

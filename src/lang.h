@@ -1016,7 +1016,6 @@ enum StringID {
   // that another spool holds.
   STR_TAG2_LINKED_INFO,
   STR_TAG2_FAILED,
-  STR_TAG2_UNCLEAR,
   STR_TAGMOVE_HINT,
   STR_TAGMOVE_BTN,
   STR_TAGMOVE_FAILED,
@@ -1949,6 +1948,7 @@ enum StringID {
   // Busy card while a MIFARE (CFS) tag is written: title and hint
   STR_TW_HANDS_OFF,
   STR_TW_HANDS_OFF_HINT,
+  STR_TAG2_UNCLEAR,
   STR_COUNT
 };
 
