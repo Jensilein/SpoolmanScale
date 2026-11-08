@@ -559,7 +559,13 @@ void applyServerColor(const String& sm_color, bool is_bambu_tag) {
   snprintf(sm_color_global, sizeof(sm_color_global), "%s", sm_color.c_str());
   SpoolColor server;
   spoolColorParse(sm_color.c_str(), &server);
-  const SpoolColor shown = is_bambu_tag ? spoolColorResolve(g_tag.color, server) : server;
+  // is_bambu_tag means "the tag carried a record", which a Creality tag does
+  // too. Unlike a Bambu tag it is rewritten whenever the spool changes, and
+  // the backend is where the spool is kept, so the backend's colour wins as
+  // on an NTAG. A Creality tag still holding another spool's record painted
+  // that spool's colour otherwise (08.11.2026, spool 42).
+  const bool tag_colour_counts = is_bambu_tag && strcmp(g_tag.decoder, "Creality") != 0;
+  const SpoolColor shown = tag_colour_counts ? spoolColorResolve(g_tag.color, server) : server;
   if (!shown.valid) return;
   swatchPaint(lbl_color_swatch, shown);
   // The raw server value rather than the parsed one, so a malformed colour is

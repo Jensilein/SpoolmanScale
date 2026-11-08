@@ -61,6 +61,53 @@ static int wakeCard(const uint8_t uid[4], const char* uid_str, bool* reader_sile
   return 0;
 }
 
+// g_tag from a decoded record: what the scan of a Creality tag puts there,
+// and what a write puts there again, so the screen and the next comparison
+// with the backend see what the tag now holds and not what it held before.
+// Only the scan starts from a cleared g_tag; after a write the fields the
+// record carries are overwritten and the rest stays as the scan left it.
+static void fillTagFromRecord(const uint8_t uid[4], const char* uid_str, const CrealityTag& t,
+                              bool clear) {
+  if (clear) memset(&g_tag, 0, sizeof(g_tag));
+  memcpy(g_tag.uid, uid, 4);
+  snprintf(g_tag.uid_str, sizeof(g_tag.uid_str), "%s", uid_str);
+  snprintf(g_tag.decoder, sizeof(g_tag.decoder), "Creality");
+  snprintf(g_tag.serial, sizeof(g_tag.serial), "%s", t.serial);
+
+  // The base material ("PLA", "PETG-CF") is what the link list filters on by
+  // its first three letters; the product name goes to detailed_filament.
+  if (t.material[0]) {
+    snprintf(g_tag.material, sizeof(g_tag.material), "%s", t.material);
+  }
+  if (t.name[0]) {
+    snprintf(g_tag.detailed_filament, sizeof(g_tag.detailed_filament), "%s", t.name);
+  } else {
+    snprintf(g_tag.detailed_filament, sizeof(g_tag.detailed_filament), "Creality ID %s", t.filament_id);
+  }
+  snprintf(g_tag.vendor, sizeof(g_tag.vendor), "%s", t.brand[0] ? t.brand : "Creality");
+  snprintf(g_tag.material_id, sizeof(g_tag.material_id), "%s", t.filament_id);
+
+  if (t.has_color) {
+    snprintf(g_tag.color_hex, sizeof(g_tag.color_hex), "#%02X%02X%02X", t.r, t.g, t.b);
+    g_tag.color = spoolColorFromRgba(t.r, t.g, t.b, 0xFF);
+  }
+  // What v0.8.2 uses to create a spool from a tag. Creality's record has
+  // no diameter, and CFS only takes 1.75 mm.
+  if (t.material[0]) {
+    snprintf(g_tag.filament_type, sizeof(g_tag.filament_type), "%s", t.material);
+  }
+  g_tag.length_m = t.length_m;
+  g_tag.diameter_mm = 1.75f;
+  g_tag.color_count = t.has_color ? 1 : 0;
+  g_tag.temp_min = t.temp_min;
+  g_tag.temp_max = t.temp_max;
+  g_tag.spool_weight = t.weight_g;
+  snprintf(g_tag.production_date, sizeof(g_tag.production_date), "%s", t.date);
+
+  // Looked up by UID, like every non-Bambu MIFARE tag.
+  snprintf(g_tag.tray_uuid, sizeof(g_tag.tray_uuid), "%s", uid_str);
+}
+
 CrealityScanResult scanCrealityTag(uint8_t *uid, uint8_t uid_len, bool fresh) {
   if (uid_len != 4) return CREALITY_SCAN_NO_AUTH;
 
@@ -115,44 +162,7 @@ CrealityScanResult scanCrealityTag(uint8_t *uid, uint8_t uid_len, bool fresh) {
     if (crealityDecrypt48(enc, plain)) crealityRememberRecord(uid, (const char*)plain);
   }
 
-  memset(&g_tag, 0, sizeof(g_tag));
-  memcpy(g_tag.uid, uid, 4);
-  snprintf(g_tag.uid_str, sizeof(g_tag.uid_str), "%s", uid_str);
-  snprintf(g_tag.decoder, sizeof(g_tag.decoder), "Creality");
-  snprintf(g_tag.serial, sizeof(g_tag.serial), "%s", t.serial);
-
-  // The base material ("PLA", "PETG-CF") is what the link list filters on by
-  // its first three letters; the product name goes to detailed_filament.
-  if (t.material[0]) {
-    snprintf(g_tag.material, sizeof(g_tag.material), "%s", t.material);
-  }
-  if (t.name[0]) {
-    snprintf(g_tag.detailed_filament, sizeof(g_tag.detailed_filament), "%s", t.name);
-  } else {
-    snprintf(g_tag.detailed_filament, sizeof(g_tag.detailed_filament), "Creality ID %s", t.filament_id);
-  }
-  snprintf(g_tag.vendor, sizeof(g_tag.vendor), "%s", t.brand[0] ? t.brand : "Creality");
-  snprintf(g_tag.material_id, sizeof(g_tag.material_id), "%s", t.filament_id);
-
-  if (t.has_color) {
-    snprintf(g_tag.color_hex, sizeof(g_tag.color_hex), "#%02X%02X%02X", t.r, t.g, t.b);
-    g_tag.color = spoolColorFromRgba(t.r, t.g, t.b, 0xFF);
-  }
-  // What v0.8.2 uses to create a spool from a tag. Creality's record has
-  // no diameter, and CFS only takes 1.75 mm.
-  if (t.material[0]) {
-    snprintf(g_tag.filament_type, sizeof(g_tag.filament_type), "%s", t.material);
-  }
-  g_tag.length_m = t.length_m;
-  g_tag.diameter_mm = 1.75f;
-  g_tag.color_count = t.has_color ? 1 : 0;
-  g_tag.temp_min = t.temp_min;
-  g_tag.temp_max = t.temp_max;
-  g_tag.spool_weight = t.weight_g;
-  snprintf(g_tag.production_date, sizeof(g_tag.production_date), "%s", t.date);
-
-  // Looked up by UID, like every non-Bambu MIFARE tag.
-  snprintf(g_tag.tray_uuid, sizeof(g_tag.tray_uuid), "%s", uid_str);
+  fillTagFromRecord(uid, uid_str, t, true);
 
   logSDf("NFC: Creality tag %s, %s %s, colour %s, %u g, serial %s", uid_str,
          g_tag.vendor, g_tag.detailed_filament,
@@ -318,6 +328,18 @@ static CrealityWriteResult verifyWritten(const uint8_t* uid, const char* uid_str
   // What the next comparison with Spoolman sees for this tag.
   crealityRememberRecord(u, rec40);
   logSDf("CFS write: %s written and verified (%.40s)", uid_str, rec40);
+  // The record read from this tag before the write is still in g_tag, and the
+  // screen painted its colour over the spool's after the lookup that followed
+  // (08.11.2026, spool 42: the old green #829B06 instead of magenta #FF0080,
+  // right only once the spool was put down again).
+  if (memcmp(g_tag.uid, u, 4) == 0 && strcmp(g_tag.decoder, "Creality") == 0) {
+    CrealityTag t;
+    if (crealityParseRecord(rec40, &t)) {
+      fillTagFromRecord(u, uid_str, t, false);
+      logSDf("CFS write: %s now shown as written, colour %s, serial %s", uid_str,
+             g_tag.color_hex[0] ? g_tag.color_hex : "-", t.serial);
+    }
+  }
   return CREALITY_WRITE_OK;
 }
 
