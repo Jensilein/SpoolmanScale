@@ -66,6 +66,12 @@ Der Wächter prüft jede Minute, meldet einen Fehler aber erst, wenn er so lange
 
 Ändern in `spoolman_waechter.json`, z. B. `"wartezeiten": {"tag_unbeschrieben": 15}`.
 
+### „Gewicht Spule“ beim Filament bestätigen
+
+Steht beim Filament ein „Gewicht Spule“, meldet der Wächter das (Grundsatz: Leergewicht beim Hersteller, beim Filament nur, wenn die Originalspule dieser Sorte anders wiegt). Ist der Wert so gewollt, beim Filament in Spoolman das Extrafeld **„Gewicht Spule geprueft“** anhaken und speichern – danach kommt für dieses Filament keine Meldung mehr. Das Feld legt der Wächter beim ersten Lauf selbst an. Wird der Haken wieder entfernt, wird erneut geprüft.
+
+Alternativ (ohne Spoolman): Schlüssel wie `filament:36:gewicht_spule` in `spoolman_waechter.json` unter `ignorieren` eintragen.
+
 ### Abbrüche von `ort_sync.py`
 
 Der Wächter meldet `ort_sync.py`, sobald in den letzten Zeilen von `ort_sync.log` ein `[ERROR]` steht. Ist Spoolman, Bambuddy oder CFSync nicht erreichbar oder antwortet nicht innerhalb von `timeout_s` (auch nach einem Wiederholversuch), bricht `ort_sync.py` den Lauf ab und ändert nichts. Seit 02.11.2026 gilt dabei:

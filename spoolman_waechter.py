@@ -12,7 +12,8 @@ Spulen
   uid_doppelt        dieselbe UID an zwei Spulen
 Filamente (nur ab "pruefen_ab" angelegte)
   extid              Externe ID doppelt (geklont, nicht geleert)
-  gewicht_spule      "Gewicht Spule" beim Filament gesetzt
+  gewicht_spule      "Gewicht Spule" beim Filament gesetzt (nicht, wenn beim Filament
+                     das Extrafeld "Gewicht Spule geprueft" angehakt ist)
   hersteller_im_namen
   keine_farbe
   silk_ohne_pla
@@ -56,6 +57,10 @@ WAAGE_CONFIG = os.path.join(HOME, "waage_config.json")
 ORT_CONFIG = os.path.join(HOME, "ort_sync.json")
 ORT_LOG = os.path.join(HOME, "ort_sync.log")
 PUSHOVER_API = "https://api.pushover.net/1/messages.json"
+# Extrafeld beim Filament: angehakt = "Gewicht Spule" ist absichtlich gesetzt
+# (Originalspule wiegt anders als beim Hersteller) - dann keine Meldung mehr.
+FELD_GEWICHT_OK = "gewicht_spule_geprueft"
+FELD_GEWICHT_OK_NAME = "Gewicht Spule geprueft"
 
 DEFAULTS = {
     "pruefen_ab": None,                 # Filamente ab diesem Datum pruefen
@@ -216,6 +221,32 @@ def check_spools(F, cfg, sm, spools):
 
 
 # ------------------------------------------------------------------ Filamente
+def is_checked(fil, key):
+    """Boolean-Extrafeld aus Spoolman (gespeichert als JSON-Text "true")."""
+    raw = (fil.get("extra") or {}).get(key)
+    try:
+        raw = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        pass
+    return raw is True or str(raw).strip().lower() in ("true", "1", "ja")
+
+
+def ensure_field_gewicht_ok(sm):
+    """Legt das Extrafeld "Gewicht Spule geprueft" beim Filament an, falls es fehlt."""
+    try:
+        r = requests.get(f"{sm}/api/v1/field/filament", timeout=15)
+        r.raise_for_status()
+        if any(f.get("key") == FELD_GEWICHT_OK for f in r.json()):
+            return
+        r = requests.post(f"{sm}/api/v1/field/filament/{FELD_GEWICHT_OK}", timeout=15,
+                          json={"name": FELD_GEWICHT_OK_NAME, "field_type": "boolean",
+                                "default_value": "false"})
+        r.raise_for_status()
+        log.info(f"Extrafeld \"{FELD_GEWICHT_OK_NAME}\" beim Filament angelegt")
+    except Exception as e:
+        log.warning(f"Extrafeld {FELD_GEWICHT_OK} nicht angelegt: {e}")
+
+
 def check_filaments(F, cfg, sm, fils, ab):
     for fil in fils:
         if (fil.get("registered") or "")[:10] < ab:
@@ -235,10 +266,11 @@ def check_filaments(F, cfg, sm, fils, ab):
                       f"Externe ID wie bei \"{twins[0].get('name')}\" (#{twins[0]['id']}) - "
                       f"vermutlich geklont, Externe ID leeren", link)
         sw = fil.get("spool_weight")
-        if sw:
+        if sw and not is_checked(fil, FELD_GEWICHT_OK):
             F.add(f"filament:{fid}:gewicht_spule", lbl,
                   f"\"Gewicht Spule\" {sw:g} g beim Filament - leeren, ausser die Originalspule "
-                  f"dieser Sorte wiegt anders als beim Hersteller", link)
+                  f"dieser Sorte wiegt anders als beim Hersteller; dann beim Filament "
+                  f"\"{FELD_GEWICHT_OK_NAME}\" anhaken", link)
         if vendor and norm(vendor) and norm(vendor) in norm(name):
             F.add(f"filament:{fid}:hersteller_im_namen", lbl,
                   f"Herstellername \"{vendor}\" steht im Namen - entfernen", link)
@@ -412,6 +444,8 @@ def main():
         except Exception as e:
             F.add("dienst:spoolman", "Dienst", f"Spoolman antwortet fehlerhaft ({str(e)[:80]})", sm)
     if spools is not None:
+        if not test:
+            ensure_field_gewicht_ok(sm)
         check_spools(F, cfg, sm, spools)
         check_filaments(F, cfg, sm, fils, cfg["pruefen_ab"])
 
