@@ -469,8 +469,9 @@ static void cfsButton(lv_obj_t* box, const Shown& s) {
   button(box, (TV_BOX_W - TV_BTN_W) / 2, cfs, false, cfsReady(s), cfsCb);
 }
 
-// Erase and write for an NTAG. A MIFARE tag can only be read, and the row
-// says so instead; with no tag there is nothing to act on.
+// Erase and write for an NTAG, the CFS write for a MIFARE tag cfsOffered()
+// lets through. Any other MIFARE tag can only be read, and the row says so
+// instead; with no tag there is nothing to act on.
 static void buildButtons(lv_obj_t* box, const Shown& s) {
   if (!s.reader_ok || !s.uid[0]) return;
   divider(box, TV_DIV2_Y);
@@ -566,7 +567,8 @@ static void build() {
 static void askCfsWrite() {
   Shown now;
   snapshot(&now);
-  if (!cfsReady(now) || strcmp(now.uid, s_shown.uid) != 0 || now.spool_id != s_shown.spool_id) {
+  if (!cfsOffered(now) || !cfsReady(now) || strcmp(now.uid, s_shown.uid) != 0 ||
+      now.spool_id != s_shown.spool_id) {
     logSDf("TAGVIEW: CFS write not asked - tag %s / spool %d changed to %s / %d",
            s_shown.uid, s_shown.spool_id, now.uid[0] ? now.uid : "-", now.spool_id);
     memcpy(&s_shown, &now, sizeof(now));
