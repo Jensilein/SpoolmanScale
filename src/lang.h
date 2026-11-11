@@ -1948,6 +1948,12 @@ enum StringID {
   // Busy card while a MIFARE (CFS) tag is written: title and hint
   STR_TW_HANDS_OFF,
   STR_TW_HANDS_OFF_HINT,
+  STR_W_SESSION_OPEN,
+  STR_W_LIVE_FOLLOW,
+  STR_W_LIVE_PAUSE,
+  STR_W_LIVE_FILTER,
+  STR_W_LIVE_SMALLER,
+  STR_W_LIVE_LARGER,
   STR_COUNT
 };
 

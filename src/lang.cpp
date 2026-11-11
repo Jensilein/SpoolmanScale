@@ -4250,6 +4250,14 @@ const char* const STRINGS[][3] = {
   { "Der Tag wird geschrieben und danach geprüft. Fertig ist er erst, wenn die Bestätigung kommt.",
     "The tag is being written and then checked. It is only done once the confirmation appears.",
     "Le tag est écrit puis vérifié. Il n'est prêt qu'à la confirmation." },  // STR_TW_HANDS_OFF_HINT
+  { "Auf eigener Seite öffnen",
+    "Open on its own page",
+    "Ouvrir dans une page à part" },  // STR_W_SESSION_OPEN
+  { "Live",             "Live",         "Direct" },  // STR_W_LIVE_FOLLOW
+  { "Angehalten",       "Paused",       "En pause" },  // STR_W_LIVE_PAUSE
+  { "Filter",           "Filter",       "Filtrer" },  // STR_W_LIVE_FILTER
+  { "Kleinere Schrift", "Smaller text", "Texte plus petit" },  // STR_W_LIVE_SMALLER
+  { "Größere Schrift",  "Larger text",  "Texte plus grand" },  // STR_W_LIVE_LARGER
 };
 
 StringID tagWriteResultString(uint8_t code) {
