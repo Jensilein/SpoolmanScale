@@ -73,9 +73,11 @@ enum MifareWriteResult {
 };
 
 // Called while a write waits for a tag that stopped answering to be put back:
-// phase 0 once, then phase 1 about every 150 ms. Keeps the screen
-// alive and says what to do. nullptr means no waiting.
-typedef void (*MifareWaitFn)(int phase);
+// phase 0 once, then phase 1 about every 150 ms, with the whole seconds this
+// wait may still take. The write runs on the loop task, so this is what keeps
+// the screen drawing and says what the scale is waiting for. nullptr means no
+// waiting.
+typedef void (*MifareWaitFn)(int phase, int seconds_left);
 
 // Puts the job onto the tag on the reader. expect, when not nullptr, is the
 // only UID accepted. overwrite: a tag that already opens with the format's

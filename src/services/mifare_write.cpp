@@ -106,26 +106,35 @@ int mifareWakeCard(const uint8_t uid[4], const char* uid_str, bool* reader_silen
   return 0;
 }
 
+// The whole seconds of a wait that are still to come, for the screen.
+static int secondsLeft(unsigned long t0, unsigned long budget_ms) {
+  const unsigned long used = millis() - t0;
+  return used >= budget_ms ? 0 : (int)((budget_ms - used + 999) / 1000);
+}
+
 // Polls for the card the write is meant for. Plain polls only: a card that
 // was just put down answers them, and nothing else touches it meanwhile.
 static bool waitForCard(uint8_t uid[NFC_UID_MAX], uint8_t* uid_len,
                         const uint8_t* expect, MifareWaitFn wait, unsigned long budget_ms) {
   if (!wait || !budget_ms) return false;
-  wait(0);
   const unsigned long t0 = millis();
+  wait(0, secondsLeft(t0, budget_ms));
   while (millis() - t0 < budget_ms) {
     *uid_len = 0;
     if (nfcReadPassiveTarget(uid, uid_len, WAIT_POLL_MS) && *uid_len == 4 &&
         (!expect || memcmp(uid, expect, 4) == 0)) {
       const unsigned long t1 = millis();
-      while (millis() - t1 < PUT_DOWN_SETTLE_MS) { wait(1); delay(WAIT_STEP_MS); }
+      while (millis() - t1 < PUT_DOWN_SETTLE_MS) {
+        wait(1, secondsLeft(t0, budget_ms));
+        delay(WAIT_STEP_MS);
+      }
       *uid_len = 0;
       if (nfcReadPassiveTarget(uid, uid_len, WAKE_POLL_MS) && *uid_len == 4 &&
           (!expect || memcmp(uid, expect, 4) == 0)) {
         return true;
       }
     }
-    wait(1);
+    wait(1, secondsLeft(t0, budget_ms));
     delay(WAIT_STEP_MS);
   }
   return false;
@@ -169,13 +178,13 @@ static bool waitAndRead(const WriteRun& run, const uint8_t key_in[MIFARE_KEY_BYT
   uint8_t uid[4], key[MIFARE_KEY_BYTES];
   memcpy(uid, run.uid, 4);
   memcpy(key, key_in, MIFARE_KEY_BYTES);
-  run.wait(0);
   const unsigned long t0 = millis();
+  run.wait(0, secondsLeft(t0, budget_ms));
   while (millis() - t0 < budget_ms) {
     if (samePoll(uid, WAIT_POLL_MS) && nfcReadMifareSector(run.job.sector, key, uid, blocks, NFC_KEY_A)) {
       return true;
     }
-    run.wait(1);
+    run.wait(1, secondsLeft(t0, budget_ms));
     delay(WAIT_STEP_MS);
   }
   return false;
@@ -359,6 +368,34 @@ static bool tryOwnKey(const WriteRun& run, bool* silent, MifareWriteResult* out)
   return true;
 }
 
+// Before a put-back is waited for: the tag has to leave the reader first. A
+// tag that still answers polls while it lies there would otherwise be "put
+// back" at once, and both put-backs ran out in two seconds without the spool
+// ever being lifted (10.11.2026, FC:69:DB:4F on spool 47: "not a blank tag"
+// twice). Gone means PUT_BACK_GONE_POLLS polls in a row without it. A spool
+// that is not lifted within PUT_BACK_LIFT_MS is asked again where it lies -
+// as before, only later. A tag that a refused key has silenced is gone at the
+// first poll and costs nothing here.
+static constexpr unsigned long PUT_BACK_LIFT_MS    = 8000;
+static constexpr int           PUT_BACK_GONE_POLLS = 2;
+static void waitForLift(const WriteRun& run) {
+  if (!run.wait) return;
+  unsigned long budget = waitBudget(run);
+  if (!budget) return;   // waitBudget() has said so; waitForCard() ends the write
+  if (budget > PUT_BACK_LIFT_MS) budget = PUT_BACK_LIFT_MS;
+  const unsigned long t0 = millis();
+  run.wait(0, secondsLeft(t0, budget));
+  int gone = 0;
+  while (millis() - t0 < budget) {
+    gone = samePoll(run.uid, WAIT_POLL_MS) ? 0 : gone + 1;
+    if (gone >= PUT_BACK_GONE_POLLS) return;
+    run.wait(1, secondsLeft(t0, budget));
+    delay(WAIT_STEP_MS);
+  }
+  logSDf("%s write: %s was not lifted within %lu s - asking it again where it lies",
+         run.job.label, run.uid_str, (budget + 999) / 1000UL);
+}
+
 // Asks for the spool to be put back and opens the job's sector with the
 // factory key again. A spool that does not come back in time is gone: the
 // write ends as "no tag", not as a foreign tag, so the caller offers it again.
@@ -366,6 +403,7 @@ enum PutBack { PUT_BACK_OPENED, PUT_BACK_REFUSED, PUT_BACK_GONE };
 static PutBack putBackFactory(const WriteRun& run) {
   uint8_t got[NFC_UID_MAX];
   uint8_t got_len = 0;
+  waitForLift(run);
   if (!waitForCard(got, &got_len, run.uid, run.wait, waitBudget(run))) {
     logSDf("%s write: %s was not put back - not written", run.job.label, run.uid_str);
     return PUT_BACK_GONE;
@@ -573,6 +611,14 @@ MifareWriteResult mifareWrite(const MifareWriteJob& job, uint8_t uid_out[4],
   bool silent = false;
   MifareWriteResult decided = MIFARE_WRITE_FAILED;
   if (overwrite && overwriteFirst(run, deferred, &silent, &decided)) return decided;
+  // Nothing below writes a block unless the sector was opened in this very
+  // write: with the factory key (openFactory, or putBackFactory after a
+  // put-back) and read blank or holding only the format's own unlocked
+  // record (a write of ours cut short), or - on an explicit overwrite only - with the
+  // format's own key (overwriteFirst, tryOwnKey). Asking for a put-back never
+  // counts as an answer: a tag that refuses both keys after the last one is
+  // NOT_BLANK. A Bambu tag opens with neither key, and one already known as
+  // Bambu's is turned away above before any key is tried.
   if (!openFactory(run, &silent, &decided)) return decided;
   return writeBlank(run);
 }
