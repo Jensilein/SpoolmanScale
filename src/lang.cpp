@@ -4241,6 +4241,14 @@ const char* const STRINGS[][3] = {
   { "Ohne Tag findest du sie nur über diese Nummer, mit \"Spule per ID\".",
     "Without a tag, this number is the only way back to it, with \"Spool by ID\".",
     "Sans tag, il faut ce numéro pour la retrouver, via \"Bobine par ID\"." },  // STR_NEWSPOOL_HINT_NOT_SHOWN
+  { "Auf eigener Seite öffnen",
+    "Open on its own page",
+    "Ouvrir dans une page à part" },  // STR_W_SESSION_OPEN
+  { "Live",             "Live",         "Direct" },  // STR_W_LIVE_FOLLOW
+  { "Angehalten",       "Paused",       "En pause" },  // STR_W_LIVE_PAUSE
+  { "Filter",           "Filter",       "Filtrer" },  // STR_W_LIVE_FILTER
+  { "Kleinere Schrift", "Smaller text", "Texte plus petit" },  // STR_W_LIVE_SMALLER
+  { "Größere Schrift",  "Larger text",  "Texte plus grand" },  // STR_W_LIVE_LARGER
 };
 
 StringID tagWriteResultString(uint8_t code) {
