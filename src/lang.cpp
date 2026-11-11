@@ -3275,6 +3275,9 @@ const char* const STRINGS[][3] = {
   { "Schreibt die Daten dieser Spule auf den Tag. Nur leere und Creality-Tags, alle anderen bleiben unverändert.",
     "Writes this spool's data to the tag. Only blank and Creality tags, all others stay as they are.",
     "Écrit les données de la bobine sur le tag. Tags vierges et Creality seulement." },  // STR_TW_CFS_RW_HINT
+  { "Tag wird noch gelesen. Spule bitte liegen lassen.",
+    "Tag is still being read. Please leave the spool in place.",
+    "Lecture du tag en cours. Laissez la bobine en place." },  // STR_TAG2_READING
 };
 
 StringID tagWriteResultString(uint8_t code) {

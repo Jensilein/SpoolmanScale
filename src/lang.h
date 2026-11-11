@@ -1543,6 +1543,7 @@ enum StringID {
   STR_TW_CFS_RW_TITLE,         // the question behind it
   STR_TW_CFS_RW_HINT,          // and what it writes and what it leaves alone
 
+  STR_TAG2_READING,
   STR_COUNT
 };
 
