@@ -52,6 +52,11 @@ static char s_unclear_uid[CARD_UIDS_MAX] = "";
 // only for SECOND_TAG_READ_GRACE_MS, so a read that never settles cannot hold
 // the popup open for good.
 static unsigned long s_grace_since_ms = 0;
+// How often the "put it back" prompt has given the clock a fresh start. A weak
+// chip that drops out and reads unclear again on its own would otherwise keep
+// the question standing for good, with nobody touching the spool.
+static uint8_t s_restarts = 0;
+#define TAG2_MAX_RESTARTS 2
 
 static unsigned long s_opened_ms    = 0;
 // What the blocking-time counter stood at when the popup opened, same
@@ -140,6 +145,7 @@ void showSecondTagPopup(int spool_id, const char* first_uid) {
   s_second_uid[0] = '\0';
   s_unclear_uid[0] = '\0';
   s_grace_since_ms = 0;
+  s_restarts = 0;
   tagUidNormalize(first_uid, s_first_uid, sizeof(s_first_uid));
   // g_tag still holds the tag that was just linked.
   s_first_bambu   = tagIsBambu(g_tag.tray_uuid);
@@ -331,10 +337,14 @@ void handleSecondTagDeferredActions() {
         lv_obj_set_style_text_color(lbl_tag2_prompt, lv_color_hex(UI_COL_WARN), 0);
       }
       // Lifting and putting back takes time of its own, so the question asks
-      // with a full clock again rather than closing under the user's hands.
-      s_opened_ms      = millis();
-      s_opened_stall   = httpStallTotalMs();
-      s_grace_since_ms = 0;
+      // with a full clock again rather than closing under the user's hands -
+      // TAG2_MAX_RESTARTS times per question at most.
+      if (s_restarts < TAG2_MAX_RESTARTS) {
+        s_restarts++;
+        s_opened_ms      = millis();
+        s_opened_stall   = httpStallTotalMs();
+        s_grace_since_ms = 0;
+      }
     } else if (verdict == TV_NONE && s_unclear_uid[0]) {
       // The tag left or is being read again: a second unclear read after
       // the spool was put back is said and logged again.
@@ -342,7 +352,10 @@ void handleSecondTagDeferredActions() {
     } else if (remainingSeconds() == 0) {
       // A new tag is on the reader but has not settled yet: its read is still
       // running. Expiring now would throw away the answer that is on its way.
-      const bool reading = verdict == TV_NONE && now[0] && strcmp(now, s_first_uid) != 0;
+      // g_tag.uid_str outlives the tag by up to a minute (clearTagDisplay),
+      // so only a tag that is on the reader now counts.
+      const bool reading = tag_present && verdict == TV_NONE && now[0] &&
+                           strcmp(now, s_first_uid) != 0;
       if (reading && s_grace_since_ms == 0) {
         s_grace_since_ms = millis();
         if (s_grace_since_ms == 0) s_grace_since_ms = 1;   // 0 means "not started"
