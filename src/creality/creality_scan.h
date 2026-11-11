@@ -42,7 +42,7 @@ enum CrealityWriteResult {
 // about every 150 ms for up to 20 s, while the user lifts the spool and puts
 // it back. The callback keeps the screen alive and says what to do; nullptr
 // means no waiting. expect, when not nullptr, is the only UID accepted.
-typedef void (*CrealityWaitFn)(int phase);
+typedef void (*CrealityWaitFn)(int phase, int seconds_left);   // seconds this wait may still take
 CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4],
                                      const uint8_t* expect = nullptr,
                                      CrealityWaitFn wait = nullptr,

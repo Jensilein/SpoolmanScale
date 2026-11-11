@@ -1349,10 +1349,10 @@ static bool writeSpoolRecord(int spool_id, TagFormat fmt,
 // code applies. Reports through finish() either way.
 static bool     s_cfs_has_expect = false;
 static uint8_t  s_cfs_expect[4];
-static void   (*s_cfs_wait)(int) = nullptr;
+static void   (*s_cfs_wait)(int, int) = nullptr;
 static bool     s_cfs_overwrite = false;
 
-void tagWriteCfsTarget(const char* uid_str, void (*wait)(int phase), bool overwrite) {
+void tagWriteCfsTarget(const char* uid_str, void (*wait)(int phase, int seconds_left), bool overwrite) {
   unsigned b[4];
   s_cfs_has_expect = uid_str && sscanf(uid_str, "%2x:%2x:%2x:%2x", &b[0], &b[1], &b[2], &b[3]) == 4;
   if (s_cfs_has_expect) for (int i = 0; i < 4; i++) s_cfs_expect[i] = (uint8_t)b[i];

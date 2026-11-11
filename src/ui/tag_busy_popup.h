@@ -29,4 +29,4 @@ void tagBusyHide();
 
 // Replaces the hint with the request to put the spool back: a CFS write is
 // waiting for a tag that stopped answering.
-void tagBusyAskReplace();
+void tagBusyAskReplace(int seconds_left);   // the seconds go under the request

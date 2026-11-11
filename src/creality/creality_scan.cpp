@@ -209,11 +209,16 @@ static int readSector1(uint8_t blk[3][16]) {
 
 // Polls for the card the write is meant for. Plain polls only: a card that
 // was just put down answers them, and nothing else touches it meanwhile.
+static int secondsLeft(unsigned long t0, unsigned long budget_ms) {
+  const unsigned long used = millis() - t0;
+  return used >= budget_ms ? 0 : (int)((budget_ms - used + 999) / 1000);
+}
+
 static bool waitForCard(uint8_t uid[NFC_UID_MAX], uint8_t* uid_len,
                         const uint8_t* expect, CrealityWaitFn wait) {
   if (!wait) return false;
-  wait(0);
   const unsigned long t0 = millis();
+  wait(0, secondsLeft(t0, 20000));
   while (millis() - t0 < 20000) {
     *uid_len = 0;
     if (nfcReadPassiveTarget(uid, uid_len, 150) && *uid_len == 4 &&
@@ -222,17 +227,40 @@ static bool waitForCard(uint8_t uid[NFC_UID_MAX], uint8_t* uid_len,
       // field, the card answers a poll and then refuses its own key
       // (13.10.2026). Let it settle and select it once more.
       const unsigned long t1 = millis();
-      while (millis() - t1 < 700) { wait(1); delay(20); }
+      while (millis() - t1 < 700) { wait(1, secondsLeft(t0, 20000)); delay(20); }
       *uid_len = 0;
       if (nfcReadPassiveTarget(uid, uid_len, 300) && *uid_len == 4 &&
           (!expect || memcmp(uid, expect, 4) == 0)) {
         return true;
       }
     }
-    wait(1);
+    wait(1, secondsLeft(t0, 20000));
     delay(20);
   }
   return false;
+}
+
+// Before a put-back is waited for, the tag has to leave the reader. One that
+// still answers polls where it lies was otherwise "put back" at once, and
+// both asks ran out in about two seconds without the spool being lifted
+// (10.11.2026, FC:69:DB:4F on spool 47). Gone = two polls in a row without
+// it; a spool not lifted within 8 s is asked again where it lies.
+static void waitForLift(const uint8_t uid[4], const char* uid_str, CrealityWaitFn wait) {
+  if (!wait) return;
+  const unsigned long t0 = millis();
+  wait(0, secondsLeft(t0, 8000));
+  int gone = 0;
+  while (millis() - t0 < 8000) {
+    uint8_t got[NFC_UID_MAX];
+    uint8_t got_len = 0;
+    const bool here = nfcReadPassiveTarget(got, &got_len, 150) && got_len == 4 &&
+                      memcmp(got, uid, 4) == 0;
+    gone = here ? 0 : gone + 1;
+    if (gone >= 2) return;
+    wait(1, secondsLeft(t0, 8000));
+    delay(20);
+  }
+  logSDf("CFS write: %s was not lifted within 8 s - asking it again where it lies", uid_str);
 }
 
 // Waits up to 20 s for the card and reads sector 1 with the Creality key the
@@ -245,15 +273,15 @@ static bool waitAndRead(const uint8_t* uid_in, uint8_t key[6], uint8_t blocks[4]
                         CrealityWaitFn wait) {
   uint8_t uid[4];
   memcpy(uid, uid_in, 4);
-  wait(0);
   const unsigned long t0 = millis();
+  wait(0, secondsLeft(t0, 20000));
   while (millis() - t0 < 20000) {
     uint8_t got[NFC_UID_MAX];
     uint8_t got_len = 0;
     if (nfcReadPassiveTarget(got, &got_len, 150) && got_len == 4 && memcmp(got, uid, 4) == 0) {
       if (nfcReadMifareSector(1, key, uid, blocks, NFC_KEY_A)) return true;
     }
-    wait(1);
+    wait(1, secondsLeft(t0, 20000));
     delay(20);
   }
   return false;
@@ -441,6 +469,7 @@ CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4],
     silent = false;
     uint8_t got[NFC_UID_MAX];
     uint8_t got_len = 0;
+    waitForLift(uid, uid_str, wait);
     if (!waitForCard(got, &got_len, uid, wait)) break;
     opened = nfcAuthMifareSector(1, FACTORY_KEY, uid, NFC_KEY_A);
   }
@@ -472,6 +501,7 @@ CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4],
     silent = false;
     uint8_t got[NFC_UID_MAX];
     uint8_t got_len = 0;
+    waitForLift(uid, uid_str, wait);
     if (!waitForCard(got, &got_len, uid, wait)) break;
     if (!nfcAuthMifareSector(1, FACTORY_KEY, uid, NFC_KEY_A)) break;
     st = readSector1(old);

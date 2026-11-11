@@ -67,7 +67,7 @@ void tagWriteSetProgress(TagWriteProgressFn fn);
 // used by one write and then forgotten.
 // overwrite: the tag may already be a Creality tag (an own tag whose spool
 // changed, or an original on a refilled spool); only on an explicit answer.
-void tagWriteCfsTarget(const char* uid_str, void (*wait)(int phase), bool overwrite = false);
+void tagWriteCfsTarget(const char* uid_str, void (*wait)(int phase, int seconds_left), bool overwrite = false);
 
 // Compares the Creality tag on the reader (as last read) with what the spool
 // in Spoolman would put on it now. own: the UID is in the spool's nfc_uid,

@@ -53,8 +53,9 @@ static uint8_t  s_cfs_variant = 0;
 
 // While a CFS write waits for a tag that stopped answering: say so on the
 // busy card, and keep the screen drawing. Runs inside tagWriteTick().
-static void cfsWaitNotice(int phase) {
-  if (phase == 0) tagBusyAskReplace();
+static void cfsWaitNotice(int phase, int seconds_left) {
+  (void)phase;
+  tagBusyAskReplace(seconds_left);
   lv_timer_handler();
 }
 
