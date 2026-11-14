@@ -668,6 +668,13 @@ LookupStep lookupResolveActive(const LookupCtx& c, JsonDocument& doc,
       strncpy(sm_material_global, sm_material.c_str(), sizeof(sm_material_global)-1);
       sm_material_global[sizeof(sm_material_global)-1] = '\0';
     }
+    // A Creality tag carries Creality's product name, and for a filament its
+    // database does not know ("Generic PLA" for a Sunlu spool) that names no
+    // maker. The CFS needs that id on the tag; the screen shows the backend's
+    // maker, as for the colour in applyServerColor() (14.11.2026, spool 23).
+    if (is_bambu_tag && strcmp(g_tag.decoder, "Creality") == 0) {
+      setFromServerOrTag(lbl_vendor, sm_vendor_name.c_str(), g_tag.vendor);
+    }
     applyServerColor(sm_color, is_bambu_tag);
     if (tagSpoolLookupShowsSpool()) applyTagSpoolView();
 
