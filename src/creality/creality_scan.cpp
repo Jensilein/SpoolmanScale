@@ -432,7 +432,8 @@ CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4],
     // Only a tag known to be Creality's is waited for here: a blank one never
     // opens with this key, and 20 s of "put it back" would be for nothing.
     // A weak Creality tag the scale never settled gets its key again below.
-    if (!ok && wait && tagFamilyGet(uid) == TAG_FAMILY_CREALITY) {
+    const bool waited = !ok && wait && tagFamilyGet(uid) == TAG_FAMILY_CREALITY;
+    if (waited) {
       logSDf("CFS write: %s does not answer with the Creality key, waiting for the spool to be put back",
              uid_str);
       ok = waitAndRead(uid, key, blocks, wait);
@@ -445,6 +446,12 @@ CrealityWriteResult crealityWriteTag(const char rec40[40], uint8_t uid_out[4],
       // A tag that has gone quiet is asked to be put back rather than given
       // up on: from the tag view that is a weak tag more often than not.
       if (!wait) return CREALITY_WRITE_NO_TAG;
+      // A spool just waited for in vain is gone: a second wait of 20 s would
+      // only ask the same again (14.11.2026, spool 23: two countdowns, 42 s).
+      if (waited) {
+        logSDf("CFS write: %s was not put back - not written", uid_str);
+        return CREALITY_WRITE_NO_TAG;
+      }
       silent = false;
       uint8_t got[NFC_UID_MAX];
       uint8_t got_len = 0;
