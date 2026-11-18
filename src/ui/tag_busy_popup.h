@@ -29,6 +29,8 @@ void tagBusyShow(bool erase, bool hands_off = false);
 
 // Takes it down again. Safe to call when it is not there.
 void tagBusyHide();
+// The card stands: a write or an erase is running or about to.
+bool isTagBusyOpen();
 
 // Replaces the hint with the request to put the spool back: a CFS write is
 // waiting for a tag that stopped answering. seconds_left goes under it, so

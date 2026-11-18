@@ -156,3 +156,5 @@ void tagBusyAskDone() {
   lv_label_set_text(lbl_busy_hint, T(s_hands_off ? STR_TW_HANDS_OFF_HINT : STR_TW_BUSY_HINT));
   lv_obj_set_style_text_color(lbl_busy_hint, lv_color_hex(s_hands_off ? UI_COL_INK : UI_COL_INK_2), 0);
 }
+
+bool isTagBusyOpen() { return scr_tag_busy != nullptr; }

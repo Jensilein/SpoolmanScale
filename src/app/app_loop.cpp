@@ -139,6 +139,7 @@
 #include "ui/wifi_menu_screen.h"
 #include "ui/system_screen.h"
 #include "ui/tag_display.h"
+#include "ui/tag_busy_popup.h"
 #include "ui/tag_view.h"
 #include "ui/weight_format.h"
 #include "lang.h"
@@ -1266,7 +1267,7 @@ void appLoop() {
   // starts over once the write is done: the write blocks the loop, so the
   // weight and the reader are stale for a moment after it, and a spool that
   // was put back for the write was asked about as removed.
-  const bool tag_write_up = isTagWritePopupOpen() || isTagViewOpen();
+  const bool tag_write_up = isTagWritePopupOpen() || isTagBusyOpen() || isTagViewOpen();
   if (tag_write_up && (loc_popup_pending_id > 0 || ams_popup_pending_id > 0 ||
                        pick_popup_pending_id > 0)) {
     last_tag_seen_ms = millis();
