@@ -1258,7 +1258,11 @@ void appLoop() {
   // questions wait for that dialog like for any other modal.
   if ((loc_popup_pending_id > 0 || ams_popup_pending_id > 0 ||
        pick_popup_pending_id > 0) && !tag_present &&
-      !isTareEntryOpen() && !isSpoolWeightScopeOpen()) {
+      !isTareEntryOpen() && !isSpoolWeightScopeOpen() &&
+      // Nor over a tag write: lifting the spool is part of answering its
+      // question (18.11.2026, spool 47: the bay picker opened over "Rewrite
+      // CFS tag?" while the spool was carried away for the put-back test).
+      !isTagWritePopupOpen() && !isTagViewOpen()) {
     const unsigned long since = millis() - last_tag_seen_ms;
     const bool weight_says_gone = weightSaysSpoolGone();
     const bool weight_says_stay = weightSaysSpoolStayed();
