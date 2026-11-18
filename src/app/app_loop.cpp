@@ -526,6 +526,10 @@ static unsigned long last_scale_ms = 0;
 static int  loc_popup_pending_id = -1;              // debounced popup: sm_id scheduled, fires after 1500ms
 static int  ams_popup_pending_id = -1;              // same, for the AMS question; answered first when both are due
 static int  pick_popup_pending_id = -1;             // same, for the AMS bay picker; only one of the three is ever set per backend
+// After a tag write or the tag view: the removal questions wait this long for
+// fresh weight and reader readings before they may ask (see appLoop()).
+#define TAG_WRITE_QUESTION_HOLD_MS 3000UL
+static unsigned long loc_weight_settle_hold_ms = 0;
 
 // A spool shown by its id has no tag to leave the reader, so its own lift
 // raises the questions a lifted tag gets, by the same switches, and the block
@@ -1256,13 +1260,22 @@ void appLoop() {
   // branch of that popup raises the location question again.
   // Held, not dropped, while the empty spool weight is being entered: the
   // questions wait for that dialog like for any other modal.
+  // Nor over a tag write: lifting the spool is part of answering its
+  // question (18.11.2026, spool 47: the bay picker opened over "Rewrite CFS
+  // tag?" while the spool was carried away for the put-back test). The wait
+  // starts over once the write is done: the write blocks the loop, so the
+  // weight and the reader are stale for a moment after it, and a spool that
+  // was put back for the write was asked about as removed.
+  const bool tag_write_up = isTagWritePopupOpen() || isTagViewOpen();
+  if (tag_write_up && (loc_popup_pending_id > 0 || ams_popup_pending_id > 0 ||
+                       pick_popup_pending_id > 0)) {
+    last_tag_seen_ms = millis();
+    loc_weight_settle_hold_ms = millis();
+  }
   if ((loc_popup_pending_id > 0 || ams_popup_pending_id > 0 ||
        pick_popup_pending_id > 0) && !tag_present &&
-      !isTareEntryOpen() && !isSpoolWeightScopeOpen() &&
-      // Nor over a tag write: lifting the spool is part of answering its
-      // question (18.11.2026, spool 47: the bay picker opened over "Rewrite
-      // CFS tag?" while the spool was carried away for the put-back test).
-      !isTagWritePopupOpen() && !isTagViewOpen()) {
+      !isTareEntryOpen() && !isSpoolWeightScopeOpen() && !tag_write_up &&
+      millis() - loc_weight_settle_hold_ms >= TAG_WRITE_QUESTION_HOLD_MS) {
     const unsigned long since = millis() - last_tag_seen_ms;
     const bool weight_says_gone = weightSaysSpoolGone();
     const bool weight_says_stay = weightSaysSpoolStayed();
