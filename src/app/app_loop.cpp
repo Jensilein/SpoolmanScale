@@ -69,6 +69,7 @@
 #include "ui/ams_detail_popup.h"
 #include "ui/status_picker.h"
 #include "ui/ams_view.h"
+#include "ui/ui_common.h"
 #include "services/wifi_manager.h"
 #include "services/wifi_remote.h"
 #include "services/wifi_roam.h"
@@ -1220,6 +1221,13 @@ void appLoop() {
   perfSection("ams");
   amsDetailBatchTick();
   amsPickTick();
+  // The AMS link to BamBuddy beside Spoolman: checked before the presence
+  // question below can use it. Paces itself; not under a question on screen
+  // and not while the drying batch reads the inventory mode on the other core.
+  if (wifi_ok && !uiModalWaiting() && !isAmsViewOpen() && !driedBatchBusy()) amsSideTick();
+  // An assignment the picker sent, checked again once BamBuddy may have
+  // dropped it. Same conditions: a few requests, never under a question.
+  if (wifi_ok && !uiModalWaiting() && !isAmsViewOpen() && !driedBatchBusy()) amsPickRecheckTick();
   amsPresenceTick();
   // Watches the reader for the tag on the other flange while its question
   // stands. It has to run every pass, not only when something happened: the
@@ -1235,6 +1243,12 @@ void appLoop() {
   idSpoolTick();
   idSpoolLiftQuestions();
   if (!tag_present && weightSaysSpoolGone()) loc_left_pad = true;
+  // The bay question is coming: say so the moment the weight leaves the pad,
+  // not two seconds later when the page stands.
+  if (g_scale_fitted && amsPickHasPending() && amsPickPendingSpoolId() == sm_id &&
+      weightSaysSpoolGone() && !amsPickHintUp() && !uiModalWaiting() && !isAmsViewOpen()) {
+    amsPickHintShow();
+  }
   // Debounced popups after a removal, cross-checked against the scale.
   // The AMS question and the location question hang off the same event, so
   // the verdict is worked out once and the AMS side gets it first: a spool
@@ -1314,6 +1328,9 @@ void appLoop() {
              pick_popup_pending_id);
       pick_popup_pending_id = -1;
     }
+    // Put back down: no question, so no "loading" either. Not while the tag
+    // still answers on its way up - the weight decides that.
+    if (amsPickHintUp() && !weightSaysSpoolGone()) amsPickHintHide();
   }
 
   // ── FilaMan remote link ──────────────────────────────────

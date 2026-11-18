@@ -282,6 +282,10 @@ extern bool g_sm_ams_pick_ask;
 // its Spoolman location, "<printer> AMS 1". On by default: in Spoolman's own
 // interface the location is the only place a spool's whereabouts show.
 extern bool g_sm_ams_loc;
+// Spoolman stays the backend, BamBuddy is asked only about the AMS: printers,
+// bays and the assignment of a spool to a bay. Takes the AMS source's place
+// while it is on. See amsSide* in backend_api.h.
+extern bool g_ams_bb_side;
 
 // Whether the device may use Bluetooth Low Energy at all. Off by default, and
 // off means the BLE stack is never started: no radio time shared with WiFi,

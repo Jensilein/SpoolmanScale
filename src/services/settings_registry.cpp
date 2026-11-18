@@ -10,6 +10,8 @@
 #include "services/bambuddy_api.h"
 
 #include "services/ams_assign.h"
+#include "services/ams_presence.h"
+#include "services/backend_api.h"
 #include "services/ams_source.h"
 #include "services/backend.h"
 #include "services/backend_profiles.h"
@@ -81,8 +83,30 @@ static bool bbDriedOptOk(uint8_t value) {
   return (bbInventoryMode() == BB_INV_SPOOLMAN) && bbSpoolmanUrl()[0];
 }
 
-// The bay picker on Spoolman needs somewhere to send the answer.
-static bool appliesSmAmsAsk() { return amsSourceConfigured() && !backendProfileIsOnline(); }
+// The bay picker on Spoolman needs somewhere to send the answer. With the
+// BamBuddy link on, BamBuddy's own switch below asks instead.
+static bool appliesSmAmsAsk() {
+  return amsSourceConfigured() && !backendProfileIsOnline() && !g_ams_bb_side;
+}
+
+// The location written with an assignment: through the AMS source and through
+// BamBuddy beside Spoolman alike.
+static bool appliesSmAmsLoc() {
+  return appliesSmAmsAsk() || (g_ams_bb_side && !backendProfileIsOnline());
+}
+
+// The BamBuddy bay question: BamBuddy as the backend, or beside Spoolman.
+static bool appliesBbAmsAsk() { return backendIsBamBuddy() || g_ams_bb_side; }
+
+// The BamBuddy link beside Spoolman is for the local server only.
+static bool appliesBbSide() { return !backendProfileIsOnline(); }
+
+// A changed AMS link is checked again at once, and the AMS chip forgets what
+// it learned through the old one.
+static void onAmsSideChange() {
+  amsSideReset();
+  amsPresenceForget();
+}
 
 static const uint16_t OPT_BB_DRIED[] = {
   STR_BB_DRIED_OFF, STR_BB_DRIED_SPOOLMAN, STR_BB_DRIED_NOTE
@@ -149,7 +173,7 @@ const SettingDesc SETTINGS[] = {
   { "sm_ams_loc", SET_BOOL, SC_SPOOLMAN, &g_sm_ams_loc,
     STR_SMAMS_LOC, STR_SMAMS_LOC_SUB, STR_SMAMS_LOC_INFO, LV_SYMBOL_HOME,
     1, 0, nullptr,
-    appliesSmAmsAsk, nullptr, nullptr, OPEN_NONE, nullptr, false },
+    appliesSmAmsLoc, nullptr, nullptr, OPEN_NONE, nullptr, false },
 
   // The tag on the other flange. Beside the row above because both answer the
   // same question - more than one tag per spool - and SC_ALL because FilaMan
@@ -239,10 +263,19 @@ const SettingDesc SETTINGS[] = {
   // The bay picker after weighing. A plain switch: BamBuddy knows only "ask"
   // and "off" here, because without a time window there is no third thing an
   // "always" could mean.
-  { "bb_ams_ask", SET_BOOL, SC_BAMBUDDY, &g_ams_pick_ask,
+  // Also on Spoolman while BamBuddy answers for the AMS beside it: the same
+  // server acts on the printer, so the same switch.
+  { "bb_ams_ask", SET_BOOL, SC_BAMBUDDY | SC_SPOOLMAN, &g_ams_pick_ask,
     STR_BBAMS_ASK, STR_BBAMS_ASK_SUB, STR_BBAMS_ASK_INFO, LV_SYMBOL_SHUFFLE,
     0, 0, nullptr,
-    nullptr, nullptr, nullptr, OPEN_NONE, nullptr, false },
+    appliesBbAmsAsk, nullptr, nullptr, OPEN_NONE, nullptr, false },
+
+  // Spoolman stays the backend and BamBuddy is asked about the AMS only, in
+  // the AMS source's place. The address and key are entered on the web page.
+  { "bb_side", SET_BOOL, SC_SPOOLMAN, &g_ams_bb_side,
+    STR_BBSIDE_TITLE, STR_BBSIDE_SUB, STR_BBSIDE_INFO, LV_SYMBOL_SHUFFLE,
+    0, 0, nullptr,
+    appliesBbSide, nullptr, onAmsSideChange, OPEN_NONE, nullptr, false },
 };
 
 const size_t SETTINGS_COUNT = sizeof(SETTINGS) / sizeof(SETTINGS[0]);

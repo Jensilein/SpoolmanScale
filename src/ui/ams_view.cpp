@@ -211,8 +211,15 @@ static bool s_return_to_scale_menu = false;
 // that stores bool and uint8_t, and a database id can exceed 255.
 #define AMSV_NVS_PRINTER  "ams_printer"
 
+// The bay to mark with "last here" on a PICK page, see amsViewSetLastBay().
+static int  s_last_ams  = -1;
+static int  s_last_tray = -1;
+
 void requestAmsView(AmsViewMode mode, AmsPickCb cb, const char* headline) {
   s_mode = mode;
+  // A fresh page marks nothing until its caller says otherwise.
+  s_last_ams  = -1;
+  s_last_tray = -1;
   s_cb   = cb;
   s_headline[0] = '\0';
   if (headline) snprintf(s_headline, sizeof(s_headline), "%s", headline);
@@ -245,6 +252,13 @@ void requestAmsViewFromScaleMenu() {
 }
 
 bool isAmsViewOpen() { return s_scr != nullptr; }
+
+bool amsViewLoading() { return s_scr != nullptr && (s_build_pending || s_fetch_pending); }
+
+void amsViewSetLastBay(int ams_id, int tray_id) {
+  s_last_ams  = ams_id;
+  s_last_tray = tray_id;
+}
 
 int  amsViewPrinterId() { return s_printer_id; }
 const char* amsViewPrinterName() { return s_state && s_state->valid ? s_state->printer : ""; }
@@ -504,6 +518,15 @@ static lv_obj_t* buildTile(lv_obj_t* parent, const AmsSlotUnit& unit,
   else        lv_obj_set_style_bg_color(tile, lv_color_hex(AMSV_COL_EMPTY), 0);
 
   const int reserve = markBay(tile, tray);
+  // Where the spool in question sat last: a thick warm frame, and a second
+  // line on the tile once the bay is empty. The obvious answer when a spool
+  // was only taken out to be weighed.
+  const bool last_here = (s_mode == AMS_VIEW_PICK && s_last_ams >= 0 &&
+                          unit.ams_id == s_last_ams && tray.tray_id == s_last_tray);
+  if (last_here) {
+    lv_obj_set_style_border_width(tile, 3, 0);
+    lv_obj_set_style_border_color(tile, lv_color_hex(AMSV_COL_WARM), 0);
+  }
   if (tray.active && s_printing) s_feed = { true, x + s_tile_w / 2, y + AMSV_TILE_H };
 
   AmsvText text = AMSV_TEXT_MUTED;
@@ -530,6 +553,10 @@ static lv_obj_t* buildTile(lv_obj_t* parent, const AmsSlotUnit& unit,
     // difference between "nothing in here" and "something with no data"
     // should stay visible at a glance.
     copyT(line, sizeof(line), STR_AMSV_EMPTY);
+    if (last_here) {
+      strncat(line, "\n", sizeof(line) - strlen(line) - 1);
+      strncat(line, T(STR_AMSV_LAST_HERE), sizeof(line) - strlen(line) - 1);
+    }
   } else {
     // Room for the dots uiFitLine() may add.
     char name[AMS_NAME_MAX + 3];
@@ -820,6 +847,14 @@ static void footCancelCb(lv_event_t* e) {
   s_close_pending = true;
 }
 
+// PICK: the spool is not going into the AMS at all - a K2 Plus with CFS, the
+// shelf. The same way out as Cancel, named for what it means, so the log
+// tells a deliberate "elsewhere" from a question that was let run out.
+static void footNotAmsCb(lv_event_t* e) {
+  logSD("AMSV: 'not into the AMS' tapped, no bay assigned");
+  s_close_pending = true;
+}
+
 // WINDOW: open FilaMan's assignment window. (0, 0) is the answer the
 // callback reads as "open"; the request itself runs one pass later, with
 // the page gone.
@@ -930,7 +965,10 @@ static void addCancelFill(lv_obj_t* btn) {
 // ran out and the page was asked to close.
 static bool tickPickCountdown() {
   if (!s_cancel_fill || !s_scr || s_close_pending || s_pick_pending) return false;
-  if (lv_obj_has_flag(s_scr, LV_OBJ_FLAG_HIDDEN) || isAmsDetailPopupOpen()) {
+  // A popup on top (a second tag being written, say) hides the question, so
+  // its time does not run. On 14.10.2026 the question for spool 9 ran out
+  // behind a 30 s tag write and came back a minute later.
+  if (lv_obj_has_flag(s_scr, LV_OBJ_FLAG_HIDDEN) || isAmsDetailPopupOpen() || uiModalWaiting()) {
     restartPickCountdown();
   }
   const unsigned long rem = pickRemainingMs();
@@ -1097,7 +1135,7 @@ static void buildScreen() {
   if (s_mode == AMS_VIEW_PICK) {
     s_info_btn = footButton(240 - AMSV_FOOT_GAP / 2 - AMSV_FOOT_BTN_W,
                             STR_AMSV_INFO, false, footInfoCb);
-    addCancelFill(leaveCancel(footButton(240 + AMSV_FOOT_GAP / 2, STR_CANCEL, false, footCancelCb)));
+    addCancelFill(leaveCancel(footButton(240 + AMSV_FOOT_GAP / 2, STR_AMSV_NOT_AMS, false, footNotAmsCb)));
     applyInfoMode();
   } else if (s_mode == AMS_VIEW_WINDOW) {
     footButton(240 - AMSV_FOOT_GAP / 2 - AMSV_FOOT_BTN_W, STR_AMSV_BTN_WINDOW, true, footOpenCb);
@@ -1569,6 +1607,9 @@ void handleAmsViewDeferredActions() {
     buildScreen();
     hideAllOverlays();
     if (s_scr) lv_obj_clear_flag(s_scr, LV_OBJ_FLAG_HIDDEN);
+    // "Loading AMS bays" from the lift stays in front until the bays are
+    // drawn, rather than giving way to an empty page.
+    loadingOverlayRaise();
     s_fetch_pending = true;
     return;      // one pass to draw, the next one to fetch
   }

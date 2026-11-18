@@ -54,6 +54,18 @@ void amsPickOpenFor(int spool_id, const char* spool_name);
 // Drops a note nobody acted on. Called from appLoop().
 void amsPickTick();
 
+// Looks a few minutes after an assignment whether BamBuddy still has it, and
+// sends it again when BamBuddy dropped it while the spool sits in the bay.
+// Makes network calls: from appLoop() with WiFi up and nothing on screen.
+void amsPickRecheckTick();
+
+// "Loading AMS bays" from the lift until the bay question stands. Shown by
+// appLoop() when the weight leaves the pad with a question noted, taken down
+// by the page once its bays are drawn, or after a few seconds at most.
+void amsPickHintShow();
+void amsPickHintHide();
+bool amsPickHintUp();
+
 // The Spoolman location an assignment writes for a bay's unit, "X1C AMS 1".
 // Public so taking a spool out can tell this name from one the user chose.
 void amsLocationName(char* out, size_t n, const char* printer, int ams_id);

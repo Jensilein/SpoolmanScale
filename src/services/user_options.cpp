@@ -22,6 +22,7 @@ uint8_t g_tag_comp = TAG_COMP_OFF;
 bool g_ams_pick_ask = false;
 bool g_sm_ams_pick_ask = false;
 bool g_sm_ams_loc = true;
+bool g_ams_bb_side = false;
 bool g_tag2_ask = false;
 bool g_unk_ask = true;
 bool g_flm_bambu_tags = false;

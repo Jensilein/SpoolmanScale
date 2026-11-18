@@ -467,6 +467,42 @@ int  backendMigrateLastDried(int spool_id, uint32_t timeout_ms);
 
 // --- ams slots -----------------------------------------------
 
+// ------------------------------------------------------------
+//  AMS THROUGH BAMBUDDY, SPOOLMAN STAYING THE BACKEND
+//
+//  With g_ams_bb_side on, the AMS questions below go to BamBuddy while every
+//  spool read and write still goes to Spoolman. BamBuddy then takes the place
+//  an AMS source (ams_source.h) has otherwise. That only works when BamBuddy
+//  itself runs on that same Spoolman: a spool id has to mean the same spool on
+//  both sides, or an assignment would pin some other spool to the bay. So the
+//  link is checked before it is used, and refused when BamBuddy keeps its own
+//  inventory or proxies a different Spoolman.
+// ------------------------------------------------------------
+
+enum AmsSideState : uint8_t {
+  AMS_SIDE_OFF = 0,       // option off, or another backend is active
+  AMS_SIDE_NO_HOST,       // on, but no BamBuddy address stored
+  AMS_SIDE_UNCHECKED,     // on, the check has not run yet
+  AMS_SIDE_OK,            // BamBuddy answers and proxies this Spoolman
+  AMS_SIDE_UNREACHABLE,   // no answer
+  AMS_SIDE_KEY,           // answers, but refuses the key (401/403)
+  AMS_SIDE_LOCAL,         // BamBuddy keeps its own inventory
+  AMS_SIDE_OTHER          // BamBuddy proxies a different Spoolman
+};
+
+AmsSideState amsSideState();
+// The Spoolman address BamBuddy reported at the last check, for the web page
+// to show next to AMS_SIDE_OTHER. Empty otherwise.
+const char*  amsSideSeenSpoolman();
+// Forgets the last check, so the next amsSideTick() runs one at once. After a
+// change of the option, the address or the key.
+void         amsSideReset();
+// Once per loop pass with WiFi up. Runs the check when it is due: at once
+// after a reset, then every 5 minutes while it holds, every minute while not.
+void         amsSideTick();
+// The AMS goes to BamBuddy beside Spoolman right now: option on, link checked.
+bool         amsSideActive();
+
 // Whether the active backend can show the AMS at all. BamBuddy reads it from
 // the printer status, FilaMan from its display endpoint. Spoolman knows
 // nothing about printers, and has the view only through an AMS source

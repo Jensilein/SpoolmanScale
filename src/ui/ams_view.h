@@ -52,6 +52,12 @@ void handleAmsViewDeferredActions();
 
 // True while the page is up, so the loop knows a fetch may still be running.
 bool isAmsViewOpen();
+// The page stands but its first fetch has not drawn yet.
+bool amsViewLoading();
+// The bay the spool in question sat in last, marked on the next PICK page so
+// putting it back is one tap on the obvious tile. -1 for none. Set after
+// requestAmsView(), which forgets it.
+void amsViewSetLastBay(int ams_id, int tray_id);
 
 // The printer the page last read, or 0. The pick callback needs it: the bay
 // is only half an address, and the view is what resolved the other half.
